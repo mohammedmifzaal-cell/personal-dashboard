@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tide &amp; Ledger — Work Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAURyLfpMyMyYMtZH-598SXGXnvdmeYqf4",
+    authDomain: "personal-dashboard-7bc0d.firebaseapp.com",
+    projectId: "personal-dashboard-7bc0d",
+    storageBucket: "personal-dashboard-7bc0d.firebasestorage.app",
+    messagingSenderId: "816958940237",
+    appId: "1:816958940237:web:60fc2c059c8a4149456804",
+  };
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const googleProvider = new GoogleAuthProvider();
+  const db = getFirestore(app);
+
+  window.Fb = { app, auth, googleProvider, db, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc };
+  window.dispatchEvent(new Event("fb-ready"));
+</script>
+<style>
+  html,body{ margin:0; padding:0; background:#F4F5F7; }
+  ::selection{ background:#0052CC55; }
+  input[type=checkbox]{ accent-color:#0052CC; }
+  body{ font-family:'Inter', sans-serif; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+/* ============================== DESIGN TOKENS ============================== */
+const INK = "#F4F5F7";      // page canvas (Jira neutral-100)
+const SLATE = "#FFFFFF";    // card / surface background
+const SLATE_2 = "#FAFBFC";  // input background
+const FOAM = "#172B4D";     // primary text (Jira neutral-1000)
+const TEAL = "#0052CC";     // primary accent blue (Jira B400)
+const GOLD = "#FF8B00";     // secondary accent orange
+const CORAL = "#DE350B";    // danger red
+const MUTE = "#6B778C";     // secondary/muted text
+const ON_ACCENT = "#FFFFFF"; // text placed on filled accent surfaces
+const LINE = "#DFE1E6";     // Jira border color
+const SELECTED_BG = "#DEEBFF"; // Jira selected-item tint
+const TOPBAR = "#0747A6";   // Jira top navigation bar navy
+
+/* ============================== ICONS (no external icon lib) ============================== */
+const GLYPH = {
+  dashboard: "▦", clock: "⏱", listChecks: "☑", calendar: "📅", folder: "📁",
+  barChart: "📊", fileText: "📄", settings: "⚙", play: "▶", square: "■",
+  plus: "+", check: "✓", x: "✕", trash: "🗑", alertTriangle: "⚠",
+  sparkles: "✦", download: "⬇", refresh: "↻", menu: "☰", wallet: "💰", leaves: "🧳",
+};
+function Icon({ name, size = 16, color }) {
+  return (
+    <span style={{ fontSize: size, lineHeight: 1, color: color || "inherit", display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size }}>
+      {GLYPH[name] || ""}
+    </span>
+  );
+}
+
+/* ============================== STORAGE (Firestore, per signed-in user) ============================== */
+function makeStore(uid) {
+  return {
+    async loadJSON(key, fallback) {
+      if (!uid || !window.Fb) return fallback;
+      try {
+        const { db, doc, getDoc } = window.Fb;
+        const ref = doc(db, "users", uid, "data", key);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return fallback;
+        const data = snap.data();
+        return data && typeof data.value === "string" ? JSON.parse(data.value) : fallback;
+      } catch (e) { console.error("loadJSON failed", key, e); return fallback; }
+    },
+    async saveJSON(key, value) {
+      if (!uid || !window.Fb) return;
+      try {
+        const { db, doc, setDoc } = window.Fb;
+        const ref = doc(db, "users", uid, "data", key);
+        await setDoc(ref, { value: JSON.stringify(value), updatedAt: Date.now() });
+      } catch (e) { console.error("saveJSON failed", key, e); }
+    },
+  };
+}
+
+function useFirebaseReady() {
+  const [ready, setReady] = useState(!!window.Fb);
+  useEffect(() => {
+    if (window.Fb) { setReady(true); return; }
+    const h = () => setReady(true);
+    window.addEventListener("fb-ready", h);
+    return () => window.removeEventListener("fb-ready", h);
+  }, []);
+  return ready;
+}
+
+const ALLOWED_EMAIL = "mohammed.mifzaal@gmail.com";
+
+function SignIn() {
+  async function handleSignIn() {
+    try {
+      const { auth, googleProvider, signInWithPopup } = window.Fb;
+      await signInWithPopup(auth, googleProvider);
+    } catch (e) {
+      console.error(e);
+      alert("Sign-in failed: " + e.message);
+    }
+  }
+  return (
+    <div style={{ background: INK, minHeight: "100vh" }} className="flex items-center justify-center px-6">
+      <div className="max-w-sm w-full text-center">
+        <div className="w-14 h-14 mx-auto mb-5 flex items-center justify-center" style={{ background: TEAL, borderRadius: 6 }}>
+          <span className="font-semibold text-2xl" style={{ color: ON_ACCENT }}>T</span>
+        </div>
+        <h1 className="text-2xl mb-2" style={{ color: FOAM }}>Tide &amp; Ledger</h1>
+        <p className="text-sm mb-8" style={{ color: MUTE }}>Sign in to sync your workload across devices.</p>
+        <button onClick={handleSignIn} className="w-full px-4 py-3 text-sm font-medium flex items-center justify-center gap-2" style={{ background: FOAM, color: ON_ACCENT, borderRadius: 3 }}>
+          <GoogleGlyph /> Continue with Google
+        </button>
+      </div>
+    </div>
+  );
+}
+function AccessDenied({ email, onBack }) {
+  return (
+    <div style={{ background: INK, minHeight: "100vh" }} className="flex items-center justify-center px-6">
+      <div className="max-w-sm w-full text-center">
+        <div className="w-14 h-14 mx-auto mb-5 flex items-center justify-center" style={{ background: CORAL, borderRadius: 6 }}>
+          <span className="text-2xl" style={{ color: ON_ACCENT }}>✕</span>
+        </div>
+        <h1 className="text-2xl mb-2" style={{ color: FOAM }}>Access restricted</h1>
+        <p className="text-sm mb-1" style={{ color: MUTE }}>{email} isn't authorized for this app.</p>
+        <p className="text-sm mb-8" style={{ color: MUTE }}>Only {ALLOWED_EMAIL} can sign in here.</p>
+        <button onClick={onBack} className="w-full px-4 py-3 text-sm font-medium" style={{ background: FOAM, color: ON_ACCENT, borderRadius: 3 }}>Back to sign in</button>
+      </div>
+    </div>
+  );
+}
+function GoogleGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48">
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" />
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4c-7.6 0-14.1 4.3-17.4 10.7z" />
+      <path fill="#4CAF50" d="M24 44c5.5 0 10.4-1.9 14.3-5.1l-6.6-5.6C29.6 35.3 27 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.6 5.1C9.8 39.6 16.4 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.3 5.7l6.6 5.6C41.5 36.4 44 30.6 44 24c0-1.3-.1-2.7-.4-3.5z" />
+    </svg>
+  );
+}
+function Root() {
+  const fbReady = useFirebaseReady();
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
+  const [deniedEmail, setDeniedEmail] = useState(null);
+  useEffect(() => {
+    if (!fbReady) return;
+    const { auth, onAuthStateChanged, signOut } = window.Fb;
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u && u.email !== ALLOWED_EMAIL) {
+        setDeniedEmail(u.email);
+        signOut(auth);
+        setUser(null);
+        return;
+      }
+      setDeniedEmail(null);
+      setUser(u);
+    });
+    return () => unsub();
+  }, [fbReady]);
+
+  if (!fbReady || user === undefined) {
+    return <div style={{ background: INK, minHeight: "100vh" }} className="flex items-center justify-center"><div className="text-sm font-mono" style={{ color: MUTE }}>loading…</div></div>;
+  }
+  if (deniedEmail) return <AccessDenied email={deniedEmail} onBack={() => setDeniedEmail(null)} />;
+  if (!user) return <SignIn />;
+  return <App uid={user.uid} user={user} onSignOut={() => window.Fb.signOut(window.Fb.auth)} />;
+}
+
+/* ============================== SEED DATA ==============================
+   Snapshot taken from the user's Todoist (Initiative Project, Trade
+   Agreement, Boat Builder Promo, Inbox) and Google Calendar on 12 Aug 2026.
+================================================================================ */
+const CATEGORY_DEFAULTS = [
+  { id: "cat-reporting", name: "Reporting", color: "#2A9D8F" },
+  { id: "cat-analysis", name: "Data Analysis", color: "#C9A227" },
+  { id: "cat-dashboard", name: "Dashboard", color: "#5B8FB9" },
+  { id: "cat-forecasting", name: "Forecasting", color: "#8E6C9E" },
+  { id: "cat-sales", name: "Sales Analysis", color: "#E4572E" },
+  { id: "cat-customer", name: "Customer Analysis", color: "#3D8361" },
+  { id: "cat-management", name: "Management Reporting", color: "#B85C38" },
+  { id: "cat-meetings", name: "Meetings", color: "#6C7A89" },
+  { id: "cat-admin", name: "Administrative", color: "#9B9B7A" },
+  { id: "cat-research", name: "Research", color: "#5C6B73" },
+  { id: "cat-followup", name: "Follow-up", color: "#7A6F9B" },
+  { id: "cat-adhoc", name: "Ad-hoc", color: "#B08968" },
+  { id: "cat-other", name: "Other", color: "#8A8A8A" },
+];
+const PROJECT_DEFAULTS = [
+  { id: "proj-general", name: "General", color: "#6C7A89", source: "Manual" },
+  { id: "proj-initiative", name: "Initiative Project", color: "#2A9D8F", source: "Todoist" },
+  { id: "proj-trade", name: "Trade Agreement", color: "#C9A227", source: "Todoist" },
+  { id: "proj-boatbuilder", name: "Boat Builder Promo", color: "#E4572E", source: "Todoist" },
+];
+const TASK_SEED = [
+  { title: "Review initiative report", project: "proj-initiative", category: "cat-reporting", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hG5mW7vx4Jc7Hw7" },
+  { title: "Prepare initiative analysis", project: "proj-initiative", category: "cat-analysis", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hG5mW75C6RgfhQf" },
+  { title: "Prepare new initiative forms", project: "proj-initiative", category: "cat-admin", periodGroup: "month-end", cadenceLabel: "Monthly · the 7th", pattern: { type: "monthly-day", day: 7 }, todoistId: "6hG5mWCHW9r8V3Cf" },
+  { title: "Send initiative forms", project: "proj-initiative", category: "cat-admin", periodGroup: "month-end", cadenceLabel: "Monthly · the 8th", pattern: { type: "monthly-day", day: 8 }, todoistId: "6hG5mWF8qVc6WV97" },
+  { title: "Send quarterly win-loss form", project: "proj-initiative", category: "cat-sales", periodGroup: "quarter-end", cadenceLabel: "Quarterly · quarter-end", pattern: { type: "yearly-dates", dates: [[3, 31], [6, 30], [9, 30], [12, 31]] }, todoistId: "6hG5mWGhM7Crgx87" },
+  { title: "Review win-loss and identify win rate", project: "proj-initiative", category: "cat-sales", periodGroup: "quarter-end", cadenceLabel: "Quarterly · 1 month after close", pattern: { type: "yearly-dates", dates: [[4, 30], [7, 31], [10, 31], [1, 31]] }, todoistId: "6hG5mWVcVgvC76Hf" },
+  { title: "Review trade agreement", project: "proj-trade", category: "cat-reporting", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hG5mXgjWf9Qh9Gf" },
+  { title: "Review trade agreement and identify new customers", project: "proj-trade", category: "cat-customer", periodGroup: "quarter-end", cadenceLabel: "Quarterly · quarter-end", pattern: { type: "yearly-dates", dates: [[3, 31], [6, 30], [9, 30], [12, 31]] }, todoistId: "6hG5mXhgXP6JqR87" },
+  { title: "Present findings to management (trade agreement)", project: "proj-trade", category: "cat-management", periodGroup: "quarter-end", cadenceLabel: "Quarterly · +1 day after close", pattern: { type: "yearly-dates", dates: [[4, 1], [7, 1], [10, 1], [1, 1]] }, todoistId: "6hG5mXvJ9cPRJh77" },
+  { title: "Prepare next quarter's trade agreement", project: "proj-trade", category: "cat-adhoc", periodGroup: "quarter-end", cadenceLabel: "Quarterly · +4 days after close", pattern: { type: "yearly-dates", dates: [[4, 4], [7, 4], [10, 4], [1, 4]] }, todoistId: "6hG5mc8wVc62r9cf" },
+  { title: "Review boat builder promo sales", project: "proj-boatbuilder", category: "cat-sales", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hG5mf5V7fXXfwhm" },
+  { title: "Review boat builder sales", project: "proj-boatbuilder", category: "cat-sales", periodGroup: "biannual", cadenceLabel: "Bi-annual · Jun & Dec", pattern: { type: "yearly-dates", dates: [[6, 30], [12, 31]] }, todoistId: "6hG5mf84pxVPp7Mm" },
+  { title: "Identify builder discount tier", project: "proj-boatbuilder", category: "cat-analysis", periodGroup: "biannual", cadenceLabel: "Bi-annual · +1 day", pattern: { type: "yearly-dates", dates: [[7, 1], [1, 1]] }, todoistId: "6hG5mfHPgp5vjX7F" },
+  { title: "Present findings to management (boat builder)", project: "proj-boatbuilder", category: "cat-management", periodGroup: "biannual", cadenceLabel: "Bi-annual · +2 days", pattern: { type: "yearly-dates", dates: [[7, 2], [1, 2]] }, todoistId: "6hG5mfW5vGWjP9pm" },
+  { title: "Prepare agreement with approved new discount buckets", project: "proj-boatbuilder", category: "cat-admin", periodGroup: "biannual", cadenceLabel: "Bi-annual · +5 days", pattern: { type: "yearly-dates", dates: [[7, 5], [1, 5]] }, todoistId: "6hG5mfcpPcXGp37m" },
+  { title: "Review monthly sales vs target", project: "proj-general", category: "cat-sales", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hG5mf2q9f2hqp8G" },
+  { title: "Review trade agreement performance", project: "proj-trade", category: "cat-reporting", periodGroup: "month-end", cadenceLabel: "Monthly · the 30th", pattern: { type: "monthly-day", day: 30 }, todoistId: "6hFr3VWp88XFp6Mp", needsReview: true },
+  { title: "Review revenue variance justification", project: "proj-general", category: "cat-reporting", periodGroup: "month-end", cadenceLabel: "Monthly · last day", pattern: { type: "monthly-last" }, todoistId: "6hFr3cFJghR2CG7p", needsReview: true },
+  { title: "review monthly sales", project: "proj-general", category: "cat-sales", periodGroup: "backlog", cadenceLabel: "One-off · 31 Aug 2026", pattern: { type: "once", date: "2026-08-31" }, todoistId: "6hFr3MrQ3CcMhFjp", needsReview: true },
+];
+function computeHistoricalCompletions(pattern, from, to) {
+  const dates = [];
+  let cursor = new Date(from);
+  while (cursor <= to) {
+    const due = nextDue(pattern, cursor);
+    if (!due || due > to) break;
+    dates.push(isoDate(due));
+    cursor = new Date(due.getTime() + 86400000);
+  }
+  return dates;
+}
+function seedTasks() {
+  const joined = new Date(2026, 2, 23);
+  const completedThrough = new Date(2026, 6, 31);
+  return TASK_SEED.map((t, i) => {
+    const completedDates = (t.periodGroup === "month-end" || t.periodGroup === "quarter-end")
+      ? computeHistoricalCompletions(t.pattern, joined, completedThrough) : [];
+    return {
+      id: "task-" + i, title: t.title, project: t.project, category: t.category,
+      periodGroup: t.periodGroup, cadenceLabel: t.cadenceLabel, pattern: t.pattern,
+      status: "Not Started", priority: "Normal", estimatedHours: null, actualHours: null,
+      source: "Todoist", todoistId: t.todoistId, confirmed: !t.needsReview, notes: "", completedDates,
+    };
+  });
+}
+const DEFAULT_SETTINGS = {
+  name: "Mohammed", currency: "MVR",
+};
+
+/* ============================== DATE HELPERS ============================== */
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmt(d) { const dt = new Date(d); return `${dt.getDate()} ${MONTH_NAMES[dt.getMonth()]} ${dt.getFullYear()}`; }
+function isoDate(d) { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`; }
+function lastDayOfMonth(year, month) { return new Date(year, month + 1, 0); }
+function startOfWeek(d) { const dt = new Date(d); const day = dt.getDay(); dt.setDate(dt.getDate() - day); dt.setHours(0, 0, 0, 0); return dt; }
+function nextDue(pattern, from) {
+  const d = new Date(from); d.setHours(0, 0, 0, 0);
+  if (pattern.type === "monthly-last") { let c = lastDayOfMonth(d.getFullYear(), d.getMonth()); if (c < d) c = lastDayOfMonth(d.getFullYear(), d.getMonth() + 1); return c; }
+  if (pattern.type === "monthly-day") { let c = new Date(d.getFullYear(), d.getMonth(), pattern.day); if (c < d) c = new Date(d.getFullYear(), d.getMonth() + 1, pattern.day); return c; }
+  if (pattern.type === "yearly-dates") {
+    const candidates = pattern.dates.map(([m, day]) => { let year = d.getFullYear(); let c = new Date(year, m - 1, day); if (c < d) c = new Date(year + 1, m - 1, day); return c; });
+    candidates.sort((a, b) => a - b); return candidates[0];
+  }
+  if (pattern.type === "once") return new Date(pattern.date);
+  return null;
+}
+function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+function currentQuarter(d) { return Math.floor(d.getMonth() / 3) + 1; }
+function quarterEndDate(d) { const q = currentQuarter(d); return lastDayOfMonth(d.getFullYear(), q * 3 - 1); }
+function quarterStartDate(d) { const q = currentQuarter(d); return new Date(d.getFullYear(), (q - 1) * 3, 1); }
+
+function isRecurringTask(task) { return task?.pattern?.type && task.pattern.type !== "once"; }
+function completedDateSet(task) { return new Set(task.completedDates || []); }
+function nextOpenDue(task, from) {
+  if (!task?.pattern) return null;
+  if (!isRecurringTask(task)) return nextDue(task.pattern, from);
+  const done = completedDateSet(task);
+  let cursor = new Date(from);
+  cursor.setHours(0, 0, 0, 0);
+  for (let i = 0; i < 60; i++) {
+    const due = nextDue(task.pattern, cursor);
+    if (!due) return null;
+    if (!done.has(isoDate(due))) return due;
+    cursor = new Date(due.getTime() + 86400000);
+  }
+  return null;
+}
+function completionEvents(tasks) {
+  const events = [];
+  tasks.forEach((t) => {
+    (t.completedDates || []).forEach((date) => events.push({ ...t, completionDate: date, due: new Date(date + "T00:00:00"), eventId: `${t.id}::${date}` }));
+    if (!isRecurringTask(t) && t.status === "Completed" && !(t.completedDates || []).length) {
+      const due = nextDue(t.pattern, new Date());
+      if (due) events.push({ ...t, completionDate: isoDate(due), due, eventId: `${t.id}::${isoDate(due)}` });
+    }
+  });
+  return events.sort((a, b) => b.due - a.due);
+}
+function completionPeriodLabel(task, dateString) {
+  const d = new Date(dateString + "T00:00:00");
+  if (task.periodGroup === "quarter-end") {
+    const month = d.getMonth() + 1;
+    let year = d.getFullYear();
+    let q;
+    if (month % 3 === 0) q = Math.ceil(month / 3);
+    else {
+      const prev = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      q = currentQuarter(prev); year = prev.getFullYear();
+    }
+    return `Q${q} ${year}`;
+  }
+  if (task.periodGroup === "month-end") return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+  return fmt(d);
+}
+function migrateTasksForCompletionModel(list) {
+  const joined = new Date(2026, 2, 23);
+  const completedThrough = new Date(2026, 6, 31); // through Jul 2026 only; Aug onward stays pending
+  return (list || []).map((t) => {
+    let completedDates = Array.isArray(t.completedDates) ? [...t.completedDates] : [];
+    if (t.source === "Todoist" && isRecurringTask(t) && (t.periodGroup === "month-end" || t.periodGroup === "quarter-end")) {
+      completedDates = [...new Set([...computeHistoricalCompletions(t.pattern, joined, completedThrough), ...completedDates])].sort();
+    }
+    return {
+      ...t,
+      completedDates,
+      // Recurring work is never permanently "Completed"; each completed cycle lives in completedDates.
+      status: isRecurringTask(t) && t.status === "Completed" ? "Not Started" : t.status,
+    };
+  });
+}
+
+/* ============================== UI PRIMITIVES ============================== */
+function Card({ children, className = "", style = {} }) {
+  return <div className={`border ${className}`} style={{ background: SLATE, borderColor: LINE, borderRadius: 3, boxShadow: "0 1px 1px rgba(9,30,66,0.08)", ...style }}>{children}</div>;
+}
+function Badge({ children, color = MUTE }) {
+  return <span className="inline-flex items-center px-2 py-0.5 text-xs font-semibold uppercase tracking-wide" style={{ background: color + "22", color, borderRadius: 3, fontSize: 11, letterSpacing: "0.03em" }}>{children}</span>;
+}
+function Num({ children, size = "text-2xl" }) {
+  return <span className={`${size} font-semibold`} style={{ color: FOAM }}>{children}</span>;
+}
+function EmptyState({ icon, title, body }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-14 px-6">
+      <Icon name={icon} size={28} color={MUTE} />
+      <div className="font-medium mb-1 mt-3" style={{ color: FOAM }}>{title}</div>
+      <div className="text-sm max-w-sm" style={{ color: MUTE }}>{body}</div>
+    </div>
+  );
+}
+function Button({ children, onClick, variant = "primary", size = "md", icon, disabled, type = "button" }) {
+  const base = "inline-flex items-center gap-1.5 font-medium transition-colors disabled:opacity-40";
+  const sizes = size === "sm" ? "px-2.5 py-1.5 text-xs" : "px-3.5 py-2 text-sm";
+  const styles = {
+    primary: { background: TEAL, color: ON_ACCENT, borderRadius: 3, border: "1px solid transparent" },
+    ghost: { background: "#F4F5F7", color: FOAM, borderRadius: 3, border: "1px solid transparent" },
+    gold: { background: GOLD, color: ON_ACCENT, borderRadius: 3, border: "1px solid transparent" },
+    danger: { background: "transparent", color: CORAL, borderRadius: 3, border: "1px solid " + CORAL + "55" },
+  };
+  return (
+    <button type={type} disabled={disabled} onClick={onClick} className={`${base} ${sizes}`} style={styles[variant]}>
+      {icon && <Icon name={icon} size={size === "sm" ? 14 : 16} />}
+      {children}
+    </button>
+  );
+}
+function Field({ label, children }) { return <label className="block mb-3"><div className="text-xs font-medium mb-1" style={{ color: MUTE }}>{label}</div>{children}</label>; }
+const inputStyle = { background: SLATE_2, border: "1px solid " + LINE, color: FOAM, borderRadius: 3 };
+function TextInput(props) { return <input {...props} className={`w-full px-3 py-2 text-sm outline-none ${props.className || ""}`} style={inputStyle} />; }
+function Select(props) { return <select {...props} className={`w-full px-3 py-2 text-sm outline-none ${props.className || ""}`} style={inputStyle} />; }
+
+/* ============================== LIGHTWEIGHT CHARTS (no chart library) ============================== */
+function DonutChart({ data, size = 170, thickness = 26 }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (!total) return <EmptyState icon="barChart" title="No data yet" body="Log some work to see the breakdown." />;
+  let acc = 0;
+  const stops = data.map((d) => { const start = (acc / total) * 360; acc += d.value; const end = (acc / total) * 360; return `${d.color} ${start}deg ${end}deg`; }).join(", ");
+  return (
+    <div className="flex items-center gap-5 flex-wrap">
+      <div style={{ width: size, height: size, borderRadius: "50%", background: `conic-gradient(${stops})`, position: "relative", flexShrink: 0 }}>
+        <div style={{ position: "absolute", inset: thickness, borderRadius: "50%", background: SLATE }} />
+      </div>
+      <div className="space-y-1.5">
+        {data.map((d, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <span style={{ width: 8, height: 8, borderRadius: 9999, background: d.color, display: "inline-block" }} />
+            <span style={{ color: FOAM }}>{d.name}</span>
+            <span className="font-mono" style={{ color: MUTE }}>{d.value.toFixed(1)}h</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function SimpleBarChart({ data }) {
+  const max = Math.max(1, ...data.map((d) => d.hours));
+  return (
+    <div className="space-y-3">
+      {data.map((d, i) => (
+        <div key={i}>
+          <div className="flex justify-between text-xs mb-1"><span style={{ color: FOAM }}>{d.name}</span><span className="font-mono" style={{ color: MUTE }}>{d.hours.toFixed(1)}h</span></div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(23,43,77,0.08)" }}>
+            <div className="h-full rounded-full" style={{ width: `${(d.hours / max) * 100}%`, background: TEAL }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================== NAV ============================== */
+const NAV = [
+  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { id: "board", label: "Board", icon: "listChecks" },
+  { id: "calendar", label: "Calendar", icon: "calendar" },
+  { id: "projects", label: "Projects", icon: "folder" },
+  { id: "analytics", label: "Analytics", icon: "barChart" },
+  { id: "salary", label: "Salary", icon: "wallet" },
+  { id: "leaves", label: "Leaves", icon: "leaves" },
+  { id: "reports", label: "Reports", icon: "fileText" },
+  { id: "settings", label: "Settings", icon: "settings" },
+];
+
+/* ============================== MAIN APP ============================== */
+function App({ uid, user, onSignOut }) {
+  const { loadJSON, saveJSON } = useMemo(() => makeStore(uid), [uid]);
+  const [ready, setReady] = useState(false);
+  const [page, setPage] = useState("dashboard");
+  const [navOpen, setNavOpen] = useState(false);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [categories, setCategories] = useState(CATEGORY_DEFAULTS);
+  const [projects, setProjects] = useState(PROJECT_DEFAULTS);
+  const [tasks, setTasks] = useState([]);
+  const [salary, setSalary] = useState([]);
+  const [leaves, setLeaves] = useState([]);
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    (async () => {
+      const [s, c, p, t, sal, lv] = await Promise.all([
+        loadJSON("settings", null), loadJSON("categories", null), loadJSON("projects", null),
+        loadJSON("tasks", null), loadJSON("salary", null), loadJSON("leaves", null),
+      ]);
+      setSettings(s || DEFAULT_SETTINGS); setCategories(c || CATEGORY_DEFAULTS); setProjects(p || PROJECT_DEFAULTS);
+      const migratedTasks = migrateTasksForCompletionModel(t || seedTasks());
+      setTasks(migratedTasks);
+      setSalary(sal || []); setLeaves(lv || []);
+      if (!t || JSON.stringify(migratedTasks) !== JSON.stringify(t)) await saveJSON("tasks", migratedTasks);
+      if (!s) await saveJSON("settings", DEFAULT_SETTINGS);
+      if (!c) await saveJSON("categories", CATEGORY_DEFAULTS);
+      if (!p) await saveJSON("projects", PROJECT_DEFAULTS);
+      setReady(true);
+    })();
+  }, []);
+  useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
+
+  const catMap = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories]);
+  const projMap = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p])), [projects]);
+
+  async function persistTasks(next) { setTasks(next); await saveJSON("tasks", next); }
+  async function persistSettings(next) { setSettings(next); await saveJSON("settings", next); }
+  async function persistCategories(next) { setCategories(next); await saveJSON("categories", next); }
+  async function persistProjects(next) { setProjects(next); await saveJSON("projects", next); }
+  async function persistSalary(next) { setSalary(next); await saveJSON("salary", next); }
+  async function persistLeaves(next) { setLeaves(next); await saveJSON("leaves", next); }
+
+  if (!ready) {
+    return <div style={{ background: INK, minHeight: "100vh" }} className="flex items-center justify-center"><div style={{ color: MUTE }} className="text-sm font-mono">loading workload…</div></div>;
+  }
+
+  const initials = (user?.displayName || user?.email || "?").trim().charAt(0).toUpperCase();
+  const activePage = NAV.find((n) => n.id === page);
+
+  return (
+    <div style={{ background: INK, minHeight: "100vh" }}>
+      <header className="flex items-center gap-3 px-4" style={{ height: 48, background: TOPBAR, position: "sticky", top: 0, zIndex: 40 }}>
+        <button onClick={() => setNavOpen(true)} className="md:hidden"><Icon name="menu" size={18} color={ON_ACCENT} /></button>
+        <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: "rgba(255,255,255,0.18)" }}>
+          <span className="font-bold text-xs" style={{ color: ON_ACCENT }}>T</span>
+        </div>
+        <span className="font-semibold text-sm hidden sm:inline" style={{ color: ON_ACCENT }}>Tide &amp; Ledger</span>
+        <span className="text-xs hidden lg:inline" style={{ color: "rgba(255,255,255,0.6)" }}>/ {activePage?.label || "Dashboard"}</span>
+        <div className="flex-1" />
+        <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs" style={{ background: "rgba(255,255,255,0.16)", color: "rgba(255,255,255,0.75)", borderRadius: 3, width: 220 }}>
+          <Icon name="listChecks" size={12} color="rgba(255,255,255,0.6)" /> Search
+        </div>
+        <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0" style={{ background: ON_ACCENT, color: TOPBAR }}>{initials}</div>
+      </header>
+      <div className="flex">
+        <aside className={`fixed md:sticky w-64 shrink-0 z-30 transition-transform ${navOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`} style={{ background: SLATE, borderRight: "1px solid " + LINE, top: 48, height: "calc(100vh - 48px)" }}>
+          <div className="p-4">
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: MUTE, letterSpacing: "0.04em" }}>MTCC Trading</div>
+            <div className="text-xs mt-0.5" style={{ color: MUTE }}>Data Analyst workspace</div>
+          </div>
+          <nav className="px-2 mt-1 space-y-0.5">
+            {NAV.map((n) => {
+              const active = page === n.id;
+              return (
+                <button key={n.id} onClick={() => { setPage(n.id); setNavOpen(false); }} className="w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors" style={{ background: active ? SELECTED_BG : "transparent", color: active ? TEAL : FOAM, borderRadius: 3, fontWeight: active ? 600 : 400, borderLeft: active ? `3px solid ${TEAL}` : "3px solid transparent" }}>
+                  <Icon name={n.icon} size={16} />{n.label}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="absolute bottom-0 left-0 right-0 p-4 border-t" style={{ borderColor: LINE }}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-xs truncate font-medium" style={{ color: FOAM }}>{user?.displayName || user?.email}</div>
+                <div className="text-xs" style={{ color: MUTE }}>Synced to your account</div>
+              </div>
+              <button onClick={onSignOut} className="text-xs px-2 py-1 shrink-0" style={{ color: MUTE, border: "1px solid " + LINE, borderRadius: 3 }}>Sign out</button>
+            </div>
+          </div>
+        </aside>
+        {navOpen && <div className="fixed inset-0 bg-black/50 z-20 md:hidden" style={{ top: 48 }} onClick={() => setNavOpen(false)} />}
+
+        <main className="flex-1 min-w-0">
+          <div className="p-5 md:p-8 max-w-6xl mx-auto">
+            {page === "dashboard" && <Dashboard {...{ settings, tasks, catMap, projMap, now }} />}
+            {page === "board" && <BoardView {...{ tasks, persistTasks, categories, projects, catMap, projMap, now }} />}
+            {page === "calendar" && <CalendarView {...{ tasks, catMap, projMap, now }} />}
+            {page === "projects" && <ProjectsView {...{ projects, tasks }} />}
+            {page === "analytics" && <AnalyticsView {...{ tasks, categories, projects }} />}
+            {page === "salary" && <SalaryView {...{ salary, persistSalary, settings }} />}
+            {page === "leaves" && <LeavesView {...{ leaves, persistLeaves }} />}
+            {page === "reports" && <ReportsView {...{ tasks, categories, projects, catMap, projMap, now }} />}
+            {page === "settings" && <SettingsView {...{ settings, persistSettings, categories, persistCategories, projects, persistProjects }} />}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== DASHBOARD ============================== */
+function Dashboard({ settings, tasks, catMap, projMap, now }) {
+  const qStart = quarterStartDate(now), qEnd = quarterEndDate(now);
+
+  const withDue = tasks
+    .filter((t) => t.status !== "Cancelled" && !( !isRecurringTask(t) && t.status === "Completed" ))
+    .map((t) => ({ ...t, due: nextOpenDue(t, now) }))
+    .filter((t) => t.due)
+    .sort((a, b) => a.due - b.due);
+  const upcoming = withDue.filter((t) => daysBetween(now, t.due) <= 14 && daysBetween(now, t.due) >= 0);
+  const monthEnd = withDue.filter((t) => t.periodGroup === "month-end" && t.due.getMonth() === now.getMonth() && t.due.getFullYear() === now.getFullYear());
+  const quarterEndTasks = withDue.filter((t) => t.periodGroup === "quarter-end" && t.due >= qStart && t.due <= new Date(qEnd.getTime() + 35 * 86400000));
+  const tasksRemaining = withDue.length;
+  const inProgress = withDue.filter((t) => t.status === "In Progress").length;
+  const recentlyDone = completionEvents(tasks).slice(0, 6);
+
+  return (
+    <div className="space-y-8">
+      <div><div className="text-sm" style={{ color: MUTE }}>{greeting(now)},</div><h1 className="text-3xl" style={{ color: FOAM }}>{settings.name}</h1></div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Tasks due (14d)" value={upcoming.length} sub={`${tasksRemaining} active occurrences`} />
+        <StatCard label="In progress" value={inProgress} sub="on the board right now" />
+        <StatCard label="Next deadline" value={upcoming[0] ? fmt(upcoming[0].due) : "—"} sub={upcoming[0]?.title || "Nothing imminent"} small />
+        <StatCard label="Quarter" value={`Q${currentQuarter(now)} ${now.getFullYear()}`} sub={`ends ${fmt(qEnd)}`} small />
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-3"><h2 className="text-lg" style={{ color: FOAM }}>Upcoming work</h2><span className="text-xs" style={{ color: MUTE }}>next 14 days</span></div>
+          {upcoming.length === 0 ? <div className="text-sm py-4" style={{ color: MUTE }}>Nothing due in the next two weeks.</div> : <div className="space-y-2">{upcoming.slice(0, 6).map((t) => <TaskRow key={`${t.id}-${isoDate(t.due)}`} task={t} catMap={catMap} projMap={projMap} />)}</div>}
+        </Card>
+        <Card className="p-5">
+          <h2 className="text-lg mb-3" style={{ color: FOAM }}>Period-end work</h2>
+          <div className="mb-4">
+            <div className="text-xs uppercase tracking-wide mb-2" style={{ color: GOLD }}>{MONTH_NAMES[now.getMonth()]} month-end</div>
+            {monthEnd.length === 0 ? <div className="text-sm" style={{ color: MUTE }}>No month-end items flagged.</div> : monthEnd.map((t) => <TaskRow key={`${t.id}-${isoDate(t.due)}`} task={t} catMap={catMap} projMap={projMap} compact />)}
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wide mb-2" style={{ color: GOLD }}>Q{currentQuarter(now)} {now.getFullYear()} quarter-end cycle</div>
+            {quarterEndTasks.length === 0 ? <div className="text-sm" style={{ color: MUTE }}>No quarter-end items flagged.</div> : quarterEndTasks.map((t) => <TaskRow key={`${t.id}-${isoDate(t.due)}`} task={t} catMap={catMap} projMap={projMap} compact />)}
+          </div>
+        </Card>
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-3"><h2 className="text-lg" style={{ color: FOAM }}>Recently completed</h2><span className="text-xs" style={{ color: MUTE }}>same history used by Board</span></div>
+        {recentlyDone.length === 0 ? <EmptyState icon="listChecks" title="Nothing completed yet" body="Complete a task on the Board and it will appear here." /> : (
+          <div className="space-y-2">{recentlyDone.map((t) => (
+            <div key={t.eventId} className="flex items-center justify-between gap-4 text-sm py-2" style={{ borderBottom: "1px solid " + LINE }}>
+              <div className="min-w-0"><div className="truncate" style={{ color: FOAM }}>{t.title}</div><div className="flex items-center gap-1.5 mt-1">{projMap[t.project] && <Badge color={projMap[t.project].color}>{projMap[t.project].name}</Badge>}<span className="text-xs" style={{ color: MUTE }}>{completionPeriodLabel(t, t.completionDate)}</span></div></div>
+              <span className="text-xs font-mono shrink-0" style={{ color: MUTE }}>{fmt(t.due)}</span>
+            </div>
+          ))}</div>
+        )}
+      </Card>
+    </div>
+  );
+}
+function greeting(now) { const h = now.getHours(); if (h < 12) return "Good morning"; if (h < 17) return "Good afternoon"; return "Good evening"; }
+function StatCard({ label, value, sub, small }) {
+  return <Card className="p-4"><div className="text-xs mb-1" style={{ color: MUTE }}>{label}</div><div className={small ? "text-base" : "font-mono text-2xl"} style={{ color: FOAM, fontFamily: small ? undefined : "'JetBrains Mono', monospace" }}>{value}</div>{sub && <div className="text-xs mt-1 truncate" style={{ color: MUTE }}>{sub}</div>}</Card>;
+}
+function TaskRow({ task, catMap, projMap, compact, onClick }) {
+  const cat = catMap[task.category], proj = projMap[task.project];
+  const overdue = task.status !== "Completed" && task.due < new Date(new Date().toDateString());
+  return (
+    <div onClick={onClick} className={`flex items-center justify-between py-2 ${compact ? "" : "px-2 -mx-2 rounded-lg"} ${onClick ? "cursor-pointer hover:bg-black/5" : ""}`}>
+      <div className="min-w-0">
+        <div className="text-sm truncate flex items-center gap-2" style={{ color: FOAM }}>
+          {task.needsReview && !task.confirmed && <Icon name="sparkles" size={12} color={GOLD} />}
+          {task.title}
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">{proj && <Badge color={proj.color}>{proj.name}</Badge>}{cat && <Badge color={cat.color}>{cat.name}</Badge>}</div>
+      </div>
+      <div className="text-right shrink-0 ml-3"><div className="text-xs font-mono" style={{ color: overdue ? CORAL : MUTE }}>{fmt(task.due)}</div></div>
+    </div>
+  );
+}
+
+/* ============================== WORK LOG ============================== */
+/* ============================== BOARD (Jira-style Kanban) ============================== */
+const BOARD_COLUMNS = [
+  { id: "todo", label: "TO DO", statuses: ["Not Started", "Waiting", "Deferred"], setStatus: "Not Started" },
+  { id: "inprogress", label: "IN PROGRESS", statuses: ["In Progress"], setStatus: "In Progress" },
+  { id: "done", label: "DONE", statuses: ["Completed"], setStatus: "Completed" },
+];
+function columnOf(status) { return BOARD_COLUMNS.find((c) => c.statuses.includes(status)) || BOARD_COLUMNS[0]; }
+function projectCode(name) { return (name || "GEN").replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "GEN"; }
+
+function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap, now }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [newTask, setNewTask] = useState({ title: "", project: projects[0]?.id, category: categories[0]?.id, dueDate: isoDate(now) });
+  const [dragId, setDragId] = useState(null);
+
+  const idIndex = useMemo(() => Object.fromEntries(tasks.map((t, i) => [t.id, i + 1])), [tasks]);
+  const activeBoard = useMemo(() => tasks
+    .filter((t) => t.status !== "Cancelled" && !( !isRecurringTask(t) && t.status === "Completed" ))
+    .map((t) => ({ ...t, due: nextOpenDue(t, now), isHistory: false }))
+    .filter((t) => t.due), [tasks, now]);
+  const historySummaries = useMemo(() => tasks
+    .filter((t) => isRecurringTask(t) && (t.completedDates || []).length > 0)
+    .map((t) => ({ ...t, isHistory: true, completionCount: t.completedDates.length, latestCompletion: [...t.completedDates].sort().at(-1) }))
+    .sort((a, b) => String(b.latestCompletion).localeCompare(String(a.latestCompletion))), [tasks]);
+  const completedOneOff = useMemo(() => tasks
+    .filter((t) => !isRecurringTask(t) && t.status === "Completed")
+    .map((t) => ({ ...t, due: nextDue(t.pattern, now), isHistory: false })), [tasks, now]);
+  const needsReview = tasks.filter((t) => t.needsReview && !t.confirmed);
+  const completedOccurrenceCount = tasks.reduce((sum, t) => sum + (t.completedDates || []).length + (!isRecurringTask(t) && t.status === "Completed" ? 1 : 0), 0);
+
+  async function setTaskStatus(id, status) {
+    await persistTasks(tasks.map((t) => (t.id === id ? { ...t, status } : t)));
+  }
+  async function completeTask(id, due) {
+    const dateKey = isoDate(due);
+    await persistTasks(tasks.map((t) => {
+      if (t.id !== id) return t;
+      if (!isRecurringTask(t)) return { ...t, status: "Completed" };
+      const completedDates = [...new Set([...(t.completedDates || []), dateKey])].sort();
+      return { ...t, completedDates, status: "Not Started" };
+    }));
+  }
+  async function moveTask(id, columnId, due) {
+    const col = BOARD_COLUMNS.find((c) => c.id === columnId);
+    if (!col) return;
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    if (columnId === "done") return completeTask(id, due || nextOpenDue(task, now));
+    await setTaskStatus(id, col.setStatus);
+  }
+  async function confirm(id) { await persistTasks(tasks.map((t) => (t.id === id ? { ...t, confirmed: true } : t))); }
+  async function dismiss(id) { await persistTasks(tasks.filter((t) => t.id !== id)); }
+  async function addTask(e) {
+    e.preventDefault(); if (!newTask.title.trim()) return;
+    const t = { id: "task-manual-" + Date.now(), title: newTask.title, project: newTask.project, category: newTask.category, periodGroup: "backlog", cadenceLabel: "One-off", pattern: { type: "once", date: newTask.dueDate }, status: "Not Started", priority: "Normal", estimatedHours: null, actualHours: null, source: "Manually Added", confirmed: true, notes: "", completedDates: [] };
+    await persistTasks([t, ...tasks]); setNewTask({ title: "", project: projects[0]?.id, category: categories[0]?.id, dueDate: isoDate(now) }); setShowAdd(false);
+  }
+
+  function ActiveTicket({ t }) {
+    const proj = projMap[t.project], cat = catMap[t.category];
+    const col = columnOf(t.status);
+    const colIdx = BOARD_COLUMNS.findIndex((c) => c.id === col.id);
+    const overdue = t.due && t.due < new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return (
+      <div draggable onDragStart={() => setDragId(t.id)} onDragEnd={() => setDragId(null)} className="p-3 mb-2"
+        style={{ background: SLATE, border: "1px solid " + LINE, borderRadius: 5, boxShadow: "0 1px 2px rgba(9,30,66,0.08)", cursor: "grab" }}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium leading-5" style={{ color: FOAM }}>{t.title}</div>
+            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+              {proj && <Badge color={proj.color}>{proj.name}</Badge>}
+              {cat && <span className="text-xs" style={{ color: MUTE }}>{cat.name}</span>}
+            </div>
+          </div>
+          <span className="text-xs font-mono shrink-0" style={{ color: MUTE }}>{projectCode(proj?.name)}-{idIndex[t.id]}</span>
+        </div>
+        <div className="flex items-center justify-between mt-3 pt-2" style={{ borderTop: "1px solid " + LINE }}>
+          <span className="text-xs font-medium" style={{ color: overdue ? CORAL : MUTE }}>{overdue ? "Overdue · " : "Due · "}{fmt(t.due)}</span>
+          <div className="flex items-center gap-1.5">
+            {colIdx > 0 && <button onClick={() => moveTask(t.id, BOARD_COLUMNS[colIdx - 1].id, t.due)} className="px-2 py-1 text-xs" style={{ color: MUTE, background: "#F4F5F7", borderRadius: 3 }}>←</button>}
+            {t.status !== "Completed" && <button onClick={() => completeTask(t.id, t.due)} className="px-2.5 py-1 text-xs font-semibold" style={{ color: "#FFFFFF", background: "#00875A", borderRadius: 3 }}>✓ Complete</button>}
+            {colIdx < BOARD_COLUMNS.length - 2 && <button onClick={() => moveTask(t.id, BOARD_COLUMNS[colIdx + 1].id, t.due)} className="px-2 py-1 text-xs" style={{ color: TEAL, background: SELECTED_BG, borderRadius: 3 }}>→</button>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function CompletedSummary({ t }) {
+    const proj = projMap[t.project];
+    const labels = (t.completedDates || []).map((d) => completionPeriodLabel(t, d));
+    return (
+      <div className="p-3 mb-2" style={{ background: "#F7FCF9", border: "1px solid #ABF5D1", borderRadius: 5 }}>
+        <div className="flex items-start gap-2">
+          <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: "#00875A", color: "#FFFFFF", fontSize: 11 }}>✓</div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium" style={{ color: FOAM }}>{t.title}</div>
+            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">{proj && <Badge color={proj.color}>{proj.name}</Badge>}<span className="text-xs" style={{ color: MUTE }}>{t.completionCount} completed cycle{t.completionCount === 1 ? "" : "s"}</span></div>
+            <div className="flex gap-1 mt-2 flex-wrap">{labels.map((label, i) => <span key={`${label}-${i}`} className="text-xs px-1.5 py-0.5" style={{ background: "#E3FCEF", color: "#006644", borderRadius: 3 }}>{label}</span>)}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div><h1 className="text-2xl" style={{ color: FOAM }}>Board</h1><p className="text-sm mt-1" style={{ color: MUTE }}>Past cycles stay in Done; the next recurring occurrence stays active.</p></div>
+        <Button icon="plus" onClick={() => setShowAdd((v) => !v)}>{showAdd ? "Close" : "Add task"}</Button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="p-3"><div className="text-xs" style={{ color: MUTE }}>To do</div><div className="font-mono text-xl mt-1" style={{ color: FOAM }}>{activeBoard.filter((t) => columnOf(t.status).id === "todo").length}</div></Card>
+        <Card className="p-3"><div className="text-xs" style={{ color: MUTE }}>In progress</div><div className="font-mono text-xl mt-1" style={{ color: FOAM }}>{activeBoard.filter((t) => t.status === "In Progress").length}</div></Card>
+        <Card className="p-3"><div className="text-xs" style={{ color: MUTE }}>Completed cycles</div><div className="font-mono text-xl mt-1" style={{ color: FOAM }}>{completedOccurrenceCount}</div></Card>
+      </div>
+
+      {needsReview.length > 0 && (
+        <Card className="p-4" style={{ borderColor: GOLD + "55" }}>
+          <div className="flex items-center gap-2 mb-2"><Icon name="sparkles" size={15} color={GOLD} /><span className="text-sm font-medium" style={{ color: GOLD }}>Suggested — needs your confirmation</span></div>
+          <div className="text-xs mb-3" style={{ color: MUTE }}>Pulled from Todoist but the project/category is a guess — confirm or dismiss.</div>
+          <div className="space-y-2">{needsReview.map((t) => (
+            <div key={t.id} className="flex items-center justify-between gap-3 text-sm"><span style={{ color: FOAM }}>{t.title}</span><div className="flex gap-2"><Button size="sm" variant="ghost" icon="check" onClick={() => confirm(t.id)}>Confirm</Button><Button size="sm" variant="danger" icon="x" onClick={() => dismiss(t.id)}>Dismiss</Button></div></div>
+          ))}</div>
+        </Card>
+      )}
+
+      {showAdd && (
+        <Card className="p-5">
+          <form onSubmit={addTask} className="grid sm:grid-cols-2 gap-x-4">
+            <div className="sm:col-span-2"><Field label="Title"><TextInput value={newTask.title} onChange={(e) => setNewTask({ ...newTask, title: e.target.value })} /></Field></div>
+            <Field label="Project"><Select value={newTask.project} onChange={(e) => setNewTask({ ...newTask, project: e.target.value })}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></Field>
+            <Field label="Category"><Select value={newTask.category} onChange={(e) => setNewTask({ ...newTask, category: e.target.value })}>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+            <Field label="Due date"><TextInput type="date" value={newTask.dueDate} onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })} /></Field>
+            <div className="self-end mb-3"><Button type="submit" icon="check">Add to To Do</Button></div>
+          </form>
+        </Card>
+      )}
+
+      <div className="grid lg:grid-cols-3 gap-4 items-start">
+        {BOARD_COLUMNS.map((col) => {
+          const colTasks = col.id === "done" ? completedOneOff : activeBoard.filter((t) => col.statuses.includes(t.status));
+          const displayCount = col.id === "done" ? completedOccurrenceCount : colTasks.length;
+          return (
+            <div key={col.id} onDragOver={(e) => e.preventDefault()} onDrop={() => {
+              if (!dragId || col.id === "done") { if (dragId && col.id === "done") { const t = activeBoard.find((x) => x.id === dragId); if (t) completeTask(t.id, t.due); } setDragId(null); return; }
+              const t = activeBoard.find((x) => x.id === dragId); if (t) moveTask(t.id, col.id, t.due); setDragId(null);
+            }} className="p-2" style={{ background: "#F4F5F7", borderRadius: 5, minHeight: 160 }}>
+              <div className="flex items-center justify-between px-2 py-2 mb-1">
+                <div><span className="text-xs font-bold tracking-wide" style={{ color: MUTE, letterSpacing: "0.04em" }}>{col.label}</span>{col.id === "done" && <div className="text-xs mt-0.5" style={{ color: MUTE }}>completed history</div>}</div>
+                <span className="text-xs font-semibold px-2 py-0.5" style={{ color: MUTE, background: "#EBECF0", borderRadius: 999 }}>{displayCount}</span>
+              </div>
+              <div style={{ maxHeight: "68vh", overflowY: "auto", paddingRight: 2 }}>
+                {col.id === "done" ? (
+                  <>
+                    {historySummaries.map((t) => <CompletedSummary key={`history-${t.id}`} t={t} />)}
+                    {completedOneOff.map((t) => <ActiveTicket key={`done-${t.id}`} t={t} />)}
+                    {historySummaries.length === 0 && completedOneOff.length === 0 && <div className="text-xs text-center py-8" style={{ color: MUTE }}>No completed work yet</div>}
+                  </>
+                ) : colTasks.length === 0 ? (
+                  <div className="text-xs text-center py-8" style={{ color: MUTE }}>No tasks</div>
+                ) : colTasks.map((t) => <ActiveTicket key={`${t.id}-${isoDate(t.due)}`} t={t} />)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== CALENDAR ============================== */
+function CalendarView({ tasks, catMap, projMap, now }) {
+  const withDue = useMemo(() => tasks.map((t) => ({ ...t, due: nextDue(t.pattern, now) })).sort((a, b) => a.due - b.due), [tasks, now]);
+  const upcoming = withDue.filter((t) => daysBetween(now, t.due) <= 60);
+  return (
+    <div className="space-y-6">
+      <div><h1 className="text-2xl" style={{ color: FOAM }}>Calendar</h1><p className="text-sm mt-1" style={{ color: MUTE }}>Deadlines synced to Google Calendar (mohammed.mifzaal@gmail.com). Personal calendars are excluded from this workload view.</p></div>
+      <Card>
+        {upcoming.length === 0 ? <EmptyState icon="calendar" title="Nothing in the next 60 days" body="You're clear for now." /> : (
+          <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>
+            {upcoming.map((t) => (
+              <div key={t.id} className="px-5 py-3 flex items-center justify-between">
+                <div><div className="text-sm" style={{ color: FOAM }}>{t.title}</div><div className="flex items-center gap-1.5 mt-1">{projMap[t.project] && <Badge color={projMap[t.project].color}>{projMap[t.project].name}</Badge>}</div></div>
+                <div className="text-xs font-mono" style={{ color: MUTE }}>{fmt(t.due)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================== PROJECTS ============================== */
+function ProjectsView({ projects, tasks }) {
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl" style={{ color: FOAM }}>Projects</h1>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {projects.map((p) => {
+          const pTasks = tasks.filter((t) => t.project === p.id);
+          const done = pTasks.filter((t) => t.status === "Completed").length;
+          const completion = pTasks.length ? Math.round((done / pTasks.length) * 100) : 0;
+          return (
+            <Card key={p.id} className="p-5">
+              <div className="flex items-center gap-2 mb-3"><div className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} /><h3 className="text-lg" style={{ color: FOAM }}>{p.name}</h3></div>
+              <div className="grid grid-cols-2 gap-3 text-center">
+                <div><Num size="text-lg">{pTasks.length}</Num><div className="text-xs" style={{ color: MUTE }}>tasks</div></div>
+                <div><Num size="text-lg">{completion}%</Num><div className="text-xs" style={{ color: MUTE }}>complete</div></div>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden mt-3" style={{ background: "rgba(23,43,77,0.08)" }}><div className="h-full" style={{ width: `${completion}%`, background: p.color }} /></div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CountBarChart({ data }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="space-y-3">
+      {data.map((d, i) => (
+        <div key={i}>
+          <div className="flex justify-between text-xs mb-1"><span style={{ color: FOAM }}>{d.name}</span><span className="font-mono" style={{ color: MUTE }}>{d.count}</span></div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(23,43,77,0.08)" }}>
+            <div className="h-full rounded-full" style={{ width: `${(d.count / max) * 100}%`, background: GOLD }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================== ANALYTICS ============================== */
+function AnalyticsView({ tasks, categories, projects }) {
+  const completions = tasks.flatMap((t) => (t.completedDates || []).map((d) => ({ date: d, task: t })));
+  const manualCompleted = tasks.filter((t) => t.pattern.type === "once" && t.status === "Completed").length;
+  const totalCompleted = completions.length + manualCompleted;
+  const monthEndCount = completions.filter((c) => c.task.periodGroup === "month-end").length;
+  const quarterEndCount = completions.filter((c) => c.task.periodGroup === "quarter-end").length;
+  const byMonthKey = {};
+  completions.forEach((c) => { const d = new Date(c.date); const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; byMonthKey[key] = (byMonthKey[key] || 0) + 1; });
+  const completionChart = Object.keys(byMonthKey).sort().map((key) => { const [y, m] = key.split("-").map(Number); return { name: `${MONTH_NAMES[m - 1]} ${y}`, count: byMonthKey[key] }; });
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl" style={{ color: FOAM }}>Analytics</h1>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Completion history</h2>
+        <div className="grid grid-cols-3 gap-4 mb-5 text-center">
+          <div><Num size="text-2xl">{totalCompleted}</Num><div className="text-xs mt-1" style={{ color: MUTE }}>total completed</div></div>
+          <div><Num size="text-2xl">{monthEndCount}</Num><div className="text-xs mt-1" style={{ color: MUTE }}>month-end</div></div>
+          <div><Num size="text-2xl">{quarterEndCount}</Num><div className="text-xs mt-1" style={{ color: MUTE }}>quarter-end</div></div>
+        </div>
+        {completionChart.length === 0 ? <EmptyState icon="barChart" title="Nothing completed yet" body="Mark tasks complete in Work To Be Done to see completion history here." /> : <CountBarChart data={completionChart} />}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================== SALARY ============================== */
+const SALARY_TYPES = ["Basic Salary", "Overtime", "Allowance", "Bonus", "Deduction"];
+function SalaryView({ salary, persistSalary, settings }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ month: isoDate(new Date()).slice(0, 7), type: "Basic Salary", amount: "", notes: "" });
+  const currency = settings.currency || "MVR";
+
+  async function addEntry(e) {
+    e.preventDefault();
+    if (!form.amount) return;
+    const signedAmount = form.type === "Deduction" ? -Math.abs(Number(form.amount)) : Math.abs(Number(form.amount));
+    const entry = { id: "sal-" + Date.now(), month: form.month, type: form.type, amount: signedAmount, notes: form.notes };
+    await persistSalary([entry, ...salary]);
+    setForm({ month: isoDate(new Date()).slice(0, 7), type: "Basic Salary", amount: "", notes: "" });
+    setShowForm(false);
+  }
+  async function deleteEntry(id) { await persistSalary(salary.filter((s) => s.id !== id)); }
+
+  const now = new Date();
+  const thisYear = salary.filter((s) => s.month.startsWith(String(now.getFullYear())));
+  const totalThisYear = thisYear.reduce((sum, s) => sum + s.amount, 0);
+  const monthsWithEntries = new Set(thisYear.map((s) => s.month)).size;
+  const avgPerMonth = monthsWithEntries ? totalThisYear / monthsWithEntries : 0;
+  const latest = [...salary].sort((a, b) => b.month.localeCompare(a.month))[0];
+
+  const byMonth = {};
+  salary.forEach((s) => { byMonth[s.month] = (byMonth[s.month] || 0) + s.amount; });
+  const chart = Object.keys(byMonth).sort().slice(-12).map((m) => { const [y, mo] = m.split("-").map(Number); return { name: `${MONTH_NAMES[mo - 1]} ${y}`, amount: byMonth[m] }; });
+
+  const grouped = {};
+  salary.forEach((s) => { (grouped[s.month] = grouped[s.month] || []).push(s); });
+  const months = Object.keys(grouped).sort().reverse();
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl" style={{ color: FOAM }}>Salary</h1>
+        <Button icon="plus" onClick={() => setShowForm((v) => !v)}>{showForm ? "Close" : "Add entry"}</Button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <Card className="p-4"><div className="text-xs mb-1" style={{ color: MUTE }}>Total this year</div><Num size="text-2xl">{currency} {totalThisYear.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Num></Card>
+        <Card className="p-4"><div className="text-xs mb-1" style={{ color: MUTE }}>Avg / month</div><Num size="text-2xl">{currency} {avgPerMonth.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Num></Card>
+        <Card className="p-4 col-span-2 md:col-span-1"><div className="text-xs mb-1" style={{ color: MUTE }}>Latest entry</div><div className="text-base" style={{ color: FOAM }}>{latest ? `${currency} ${latest.amount.toLocaleString()}` : "—"}</div>{latest && <div className="text-xs mt-1" style={{ color: MUTE }}>{latest.type} · {latest.month}</div>}</Card>
+      </div>
+
+      {showForm && (
+        <Card className="p-5">
+          <form onSubmit={addEntry} className="grid sm:grid-cols-2 gap-x-4">
+            <Field label="Month"><TextInput type="month" value={form.month} onChange={(e) => setForm({ ...form, month: e.target.value })} /></Field>
+            <Field label="Type"><Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{SALARY_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></Field>
+            <Field label={`Amount (${currency})`}><TextInput type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" /></Field>
+            <Field label="Notes"><TextInput value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional" /></Field>
+            <div className="sm:col-span-2"><Button type="submit" icon="check">Save entry</Button></div>
+          </form>
+        </Card>
+      )}
+
+      {chart.length > 0 && (
+        <Card className="p-5">
+          <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Monthly total (last 12 months with entries)</h2>
+          <div className="space-y-3">
+            {chart.map((d, i) => {
+              const max = Math.max(1, ...chart.map((c) => Math.abs(c.amount)));
+              return (
+                <div key={i}>
+                  <div className="flex justify-between text-xs mb-1"><span style={{ color: FOAM }}>{d.name}</span><span className="font-mono" style={{ color: MUTE }}>{currency} {d.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                  <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(23,43,77,0.08)" }}>
+                    <div className="h-full rounded-full" style={{ width: `${(Math.abs(d.amount) / max) * 100}%`, background: d.amount < 0 ? CORAL : TEAL }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        {salary.length === 0 ? (
+          <EmptyState icon="wallet" title="No salary entries yet" body="Add your pay, overtime, allowances, or deductions here — you're in control of what gets logged." />
+        ) : (
+          <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>
+            {months.map((m) => {
+              const [y, mo] = m.split("-").map(Number);
+              const monthTotal = grouped[m].reduce((s, e) => s + e.amount, 0);
+              return (
+                <div key={m} className="px-5 py-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs uppercase tracking-wide" style={{ color: GOLD }}>{MONTH_NAMES[mo - 1]} {y}</span>
+                    <Num size="text-sm">{currency} {monthTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Num>
+                  </div>
+                  {grouped[m].map((e) => (
+                    <div key={e.id} className="flex items-center justify-between text-sm py-1">
+                      <div><span style={{ color: FOAM }}>{e.type}</span>{e.notes && <span className="ml-2" style={{ color: MUTE }}>{e.notes}</span>}</div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono" style={{ color: e.amount < 0 ? CORAL : MUTE }}>{e.amount < 0 ? "-" : ""}{currency} {Math.abs(e.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <button onClick={() => deleteEntry(e.id)}><Icon name="trash" size={13} color={MUTE} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================== REPORTS ============================== */
+function ReportsView({ tasks, categories, projects, catMap, projMap, now }) {
+  const [period, setPeriod] = useState("weekly");
+  const [copied, setCopied] = useState(false);
+  const range = useMemo(() => {
+    if (period === "weekly") { const s = startOfWeek(now); return [s, new Date(s.getTime() + 6 * 86400000)]; }
+    if (period === "monthly") { return [new Date(now.getFullYear(), now.getMonth(), 1), lastDayOfMonth(now.getFullYear(), now.getMonth())]; }
+    return [quarterStartDate(now), quarterEndDate(now)];
+  }, [period, now]);
+  const completedTasks = completionEvents(tasks).filter((e) => e.due >= range[0] && e.due <= new Date(range[1].getTime() + 86399999));
+  const outstanding = tasks.filter((t) => t.status !== "Cancelled" && !( !isRecurringTask(t) && t.status === "Completed" )).map((t) => ({ ...t, due: nextOpenDue(t, now) })).filter((t) => t.due);
+  const inProgress = outstanding.filter((t) => t.status === "In Progress");
+  const byCat = categories.map((c) => ({ name: c.name, count: completedTasks.filter((t) => t.category === c.id).length })).filter((d) => d.count > 0);
+  const reportText = `${period.toUpperCase()} WORK REPORT
+${fmt(range[0])} – ${fmt(range[1])}
+
+Completed: ${completedTasks.length}
+In progress: ${inProgress.length}
+Outstanding: ${outstanding.length}
+
+Completed by category:
+${byCat.map((c) => `  ${c.name}: ${c.count}`).join("\n") || "  (none logged)"}
+
+Work completed:
+${completedTasks.slice(0, 10).map((t) => `  • ${t.title}`).join("\n") || "  (none marked complete)"}
+
+Outstanding work:
+${outstanding.slice(0, 10).map((t) => `  • ${t.title} — due ${fmt(t.due)}`).join("\n") || "  (none)"}
+`;
+  function copy() { navigator.clipboard?.writeText(reportText); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+  function downloadCSV() {
+    const rows = [["Title", "Status", "Category", "Project", "Due date"], ...tasks.map((t) => [t.title, t.status, catMap[t.category]?.name || "", projMap[t.project]?.name || "", fmt(nextOpenDue(t, now) || nextDue(t.pattern, now))])];
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "task-export.csv"; a.click(); URL.revokeObjectURL(url);
+  }
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl" style={{ color: FOAM }}>Reports</h1>
+        <div className="flex gap-2">{["weekly", "monthly", "quarterly"].map((p) => (
+          <button key={p} onClick={() => setPeriod(p)} className="px-3 py-1.5 text-xs capitalize" style={{ background: period === p ? TEAL : "transparent", color: period === p ? ON_ACCENT : MUTE, borderRadius: 3, border: period === p ? "none" : "1px solid " + LINE }}>{p}</button>
+        ))}</div>
+      </div>
+      <Card className="p-5">
+        <pre className="text-sm whitespace-pre-wrap font-mono" style={{ color: FOAM, fontFamily: "'JetBrains Mono', monospace" }}>{reportText}</pre>
+        <div className="flex gap-2 mt-4"><Button icon="check" onClick={copy}>{copied ? "Copied" : "Copy report"}</Button><Button variant="ghost" icon="download" onClick={downloadCSV}>Export tasks CSV</Button></div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================== LEAVES ============================== */
+const LEAVE_TYPES = [
+  "Government Holiday", "Annual Leave", "FRL (Family Responsibility Leave)",
+  "Sick Leave (with MC)", "Sick Leave (without MC)", "Paternity Leave", "Circumcision Leave",
+];
+function LeavesView({ leaves, persistLeaves }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ type: LEAVE_TYPES[0], startDate: isoDate(new Date()), endDate: isoDate(new Date()), notes: "" });
+
+  async function addEntry(e) {
+    e.preventDefault();
+    const days = daysBetween(new Date(form.startDate), new Date(form.endDate)) + 1;
+    const entry = { id: "leave-" + Date.now(), type: form.type, startDate: form.startDate, endDate: form.endDate, days: Math.max(1, days), notes: form.notes };
+    await persistLeaves([entry, ...leaves]);
+    setForm({ type: LEAVE_TYPES[0], startDate: isoDate(new Date()), endDate: isoDate(new Date()), notes: "" });
+    setShowForm(false);
+  }
+  async function deleteEntry(id) { await persistLeaves(leaves.filter((l) => l.id !== id)); }
+
+  const now = new Date();
+  const thisYear = leaves.filter((l) => new Date(l.startDate).getFullYear() === now.getFullYear());
+  const totalDaysThisYear = thisYear.reduce((s, l) => s + l.days, 0);
+  const byType = LEAVE_TYPES.map((t) => ({ name: t, days: thisYear.filter((l) => l.type === t).reduce((s, l) => s + l.days, 0) })).filter((d) => d.days > 0);
+  const maxDays = Math.max(1, ...byType.map((d) => d.days));
+  const grouped = {};
+  leaves.forEach((l) => { (grouped[l.type] = grouped[l.type] || []).push(l); });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl" style={{ color: FOAM }}>Leaves</h1>
+        <Button icon="plus" onClick={() => setShowForm((v) => !v)}>{showForm ? "Close" : "Add entry"}</Button>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <Card className="p-4"><div className="text-xs mb-1" style={{ color: MUTE }}>Total days this year</div><Num size="text-2xl">{totalDaysThisYear}</Num></Card>
+        <Card className="p-4"><div className="text-xs mb-1" style={{ color: MUTE }}>Types used</div><Num size="text-2xl">{byType.length}</Num></Card>
+      </div>
+      {showForm && (
+        <Card className="p-5">
+          <form onSubmit={addEntry} className="grid sm:grid-cols-2 gap-x-4">
+            <div className="sm:col-span-2"><Field label="Type"><Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{LEAVE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></Field></div>
+            <Field label="Start date"><TextInput type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>
+            <Field label="End date"><TextInput type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
+            <div className="sm:col-span-2"><Field label="Notes"><TextInput value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional" /></Field></div>
+            <div className="sm:col-span-2"><Button type="submit" icon="check">Save entry</Button></div>
+          </form>
+        </Card>
+      )}
+      {byType.length > 0 && (
+        <Card className="p-5">
+          <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Days by type (this year)</h2>
+          <div className="space-y-3">
+            {byType.map((d, i) => (
+              <div key={i}>
+                <div className="flex justify-between text-xs mb-1"><span style={{ color: FOAM }}>{d.name}</span><span className="font-mono" style={{ color: MUTE }}>{d.days}d</span></div>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(23,43,77,0.08)" }}><div className="h-full rounded-full" style={{ width: `${(d.days / maxDays) * 100}%`, background: GOLD }} /></div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      <Card>
+        {leaves.length === 0 ? <EmptyState icon="leaves" title="No leave recorded yet" body="Add annual leave, sick leave, government holidays, and more here — organized by type." /> : (
+          <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>
+            {LEAVE_TYPES.filter((t) => grouped[t]?.length).map((t) => (
+              <div key={t} className="px-5 py-3">
+                <div className="text-xs uppercase tracking-wide mb-2" style={{ color: GOLD }}>{t}</div>
+                {grouped[t].sort((a, b) => new Date(b.startDate) - new Date(a.startDate)).map((l) => (
+                  <div key={l.id} className="flex items-center justify-between text-sm py-1">
+                    <div><span style={{ color: FOAM }}>{fmt(l.startDate)}{l.startDate !== l.endDate ? ` – ${fmt(l.endDate)}` : ""}</span>{l.notes && <span className="ml-2" style={{ color: MUTE }}>{l.notes}</span>}</div>
+                    <div className="flex items-center gap-3"><span className="font-mono" style={{ color: MUTE }}>{l.days}d</span><button onClick={() => deleteEntry(l.id)}><Icon name="trash" size={13} color={MUTE} /></button></div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================== SETTINGS ============================== */
+function SettingsView({ settings, persistSettings, categories, persistCategories, projects, persistProjects }) {
+  const [local, setLocal] = useState(settings);
+  const [newCat, setNewCat] = useState("");
+  const [newProj, setNewProj] = useState("");
+  async function save() { await persistSettings(local); }
+  async function addCategory() { if (!newCat.trim()) return; await persistCategories([...categories, { id: "cat-" + Date.now(), name: newCat.trim(), color: "#8A8A8A" }]); setNewCat(""); }
+  async function removeCategory(id) { await persistCategories(categories.filter((c) => c.id !== id)); }
+  async function addProject() { if (!newProj.trim()) return; await persistProjects([...projects, { id: "proj-" + Date.now(), name: newProj.trim(), color: "#8A8A8A", source: "Manual" }]); setNewProj(""); }
+  async function removeProject(id) { await persistProjects(projects.filter((p) => p.id !== id)); }
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <h1 className="text-2xl" style={{ color: FOAM }}>Settings</h1>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Profile</h2>
+        <Field label="Your name"><TextInput value={local.name} onChange={(e) => setLocal({ ...local, name: e.target.value })} /></Field>
+        <Field label="Currency"><TextInput value={local.currency || "MVR"} onChange={(e) => setLocal({ ...local, currency: e.target.value })} /></Field>
+        <Button icon="check" onClick={save}>Save settings</Button>
+      </Card>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Categories</h2>
+        <div className="space-y-1.5 mb-3">{categories.map((c) => (
+          <div key={c.id} className="flex items-center justify-between text-sm"><Badge color={c.color}>{c.name}</Badge><button onClick={() => removeCategory(c.id)}><Icon name="trash" size={13} color={MUTE} /></button></div>
+        ))}</div>
+        <div className="flex gap-2"><TextInput value={newCat} onChange={(e) => setNewCat(e.target.value)} placeholder="New category" /><Button icon="plus" onClick={addCategory}>Add</Button></div>
+      </Card>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Projects</h2>
+        <div className="space-y-1.5 mb-3">{projects.map((p) => (
+          <div key={p.id} className="flex items-center justify-between text-sm"><Badge color={p.color}>{p.name}</Badge><button onClick={() => removeProject(p.id)}><Icon name="trash" size={13} color={MUTE} /></button></div>
+        ))}</div>
+        <div className="flex gap-2"><TextInput value={newProj} onChange={(e) => setNewProj(e.target.value)} placeholder="New project" /><Button icon="plus" onClick={addProject}>Add</Button></div>
+      </Card>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Integrations</h2>
+        <div className="text-sm space-y-2" style={{ color: FOAM }}>
+          <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Todoist — read-only snapshot, taken 12 Aug 2026</div>
+          <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Calendar — read-only snapshot, taken 12 Aug 2026</div>
+        </div>
+        <p className="text-xs mt-3" style={{ color: MUTE }}>Data syncs to your Firebase account. It can't call Todoist or Calendar live — ask Claude to regenerate this file when your recurring tasks change.</p>
+      </Card>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<Root />);
+</script>
+</body>
+</html>

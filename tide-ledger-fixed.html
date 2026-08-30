@@ -110,7 +110,7 @@ function useFirebaseReady() {
   return ready;
 }
 
-const ALLOWED_EMAIL = "mohammed.mifzaal@gmail.com";
+const ALLOWED_EMAIL = "mifzal.mifzaal@gmail.com";
 
 function SignIn() {
   async function handleSignIn() {
@@ -262,7 +262,7 @@ function seedTasks() {
   });
 }
 const DEFAULT_SETTINGS = {
-  name: "Mohammed", currency: "MVR",
+  name: "mifzal", currency: "MVR",
 };
 
 /* ============================== DATE HELPERS ============================== */
@@ -809,7 +809,7 @@ function CalendarView({ tasks, catMap, projMap, now }) {
   const upcoming = withDue.filter((t) => daysBetween(now, t.due) <= 60);
   return (
     <div className="space-y-6">
-      <div><h1 className="text-2xl" style={{ color: FOAM }}>Calendar</h1><p className="text-sm mt-1" style={{ color: MUTE }}>Deadlines synced to Google Calendar (mohammed.mifzaal@gmail.com). Personal calendars are excluded from this workload view.</p></div>
+      <div><h1 className="text-2xl" style={{ color: FOAM }}>Calendar</h1><p className="text-sm mt-1" style={{ color: MUTE }}>Deadlines synced to Google Calendar (mifzal.mifzaal@gmail.com). Personal calendars are excluded from this workload view.</p></div>
       <Card>
         {upcoming.length === 0 ? <EmptyState icon="calendar" title="Nothing in the next 60 days" body="You're clear for now." /> : (
           <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>

@@ -693,13 +693,28 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
     await persistTasks(tasks.filter((t) => t.id !== id));
     if (commentOpenId === id) { setCommentOpenId(null); setCommentDraft(""); }
   }
-  async function addComment(id) {
-    const text = commentDraft.trim();
-    if (!text) return;
-    const comment = { id: "comment-" + Date.now(), text, createdAt: new Date().toISOString() };
-    await persistTasks(tasks.map((t) => t.id === id ? { ...t, comments: [...(t.comments || []), comment] } : t));
-    setCommentDraft("");
-  }
+function addComment(id) {
+  const text = commentDraft.trim();
+  if (!text) return;
+
+  const comment = {
+    id: "comment-" + Date.now(),
+    text,
+    createdAt: new Date().toISOString()
+  };
+
+  const nextTasks = tasks.map((t) =>
+    t.id === id
+      ? { ...t, comments: [...(t.comments || []), comment] }
+      : t
+  );
+
+  // Clear the input immediately
+  setCommentDraft("");
+
+  // Update UI immediately and save to Firestore in the background
+  persistTasks(nextTasks);
+}
   async function addTask(e) {
     e.preventDefault(); if (!newTask.title.trim()) return;
     const t = { id: "task-manual-" + Date.now(), title: newTask.title, project: newTask.project, category: newTask.category, periodGroup: "backlog", cadenceLabel: "One-off", pattern: { type: "once", date: newTask.dueDate }, status: "Not Started", priority: "Normal", estimatedHours: null, actualHours: null, source: "Manually Added", confirmed: true, notes: "", comments: [], completedDates: [] };

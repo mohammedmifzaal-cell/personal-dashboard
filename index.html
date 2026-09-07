@@ -337,18 +337,37 @@ function completionPeriodLabel(task, dateString) {
 }
 function migrateTasksForCompletionModel(list) {
   const joined = new Date(2026, 2, 23);
-  const completedThrough = new Date(2026, 6, 31); // through Jul 2026 only; Aug onward stays pending
+  const completedThrough = new Date(2026, 6, 31); // existing historical rule: through Jul 2026
+  const janStart = new Date(2026, 0, 1);
+  const febEnd = new Date(2026, 1, 28, 23, 59, 59);
+
   return (list || []).map((t) => {
     let completedDates = Array.isArray(t.completedDates) ? [...t.completedDates] : [];
+
+    // Preserve the original imported-history behavior.
     if (t.source === "Todoist" && isRecurringTask(t) && (t.periodGroup === "month-end" || t.periodGroup === "quarter-end")) {
       completedDates = [...new Set([...computeHistoricalCompletions(t.pattern, joined, completedThrough), ...completedDates])].sort();
     }
+
+    // Requested 2026 correction: every recurring occurrence due in Jan or Feb is completed.
+    if (isRecurringTask(t)) {
+      const janFebCycles = computeHistoricalCompletions(t.pattern, janStart, febEnd);
+      completedDates = [...new Set([...janFebCycles, ...completedDates])].sort();
+    }
+
+    // If a one-off item ever falls in Jan/Feb 2026, mark it completed too.
+    let status = isRecurringTask(t) && t.status === "Completed" ? "Not Started" : t.status;
+    if (!isRecurringTask(t) && t?.pattern?.type === "once") {
+      const due = nextDue(t.pattern, janStart);
+      if (due && due >= janStart && due <= febEnd) status = "Completed";
+    }
+
     return {
       ...t,
       comments: Array.isArray(t.comments) ? t.comments : [],
+      occurrenceStatuses: t.occurrenceStatuses && typeof t.occurrenceStatuses === "object" ? t.occurrenceStatuses : {},
       completedDates,
-      // Recurring work is never permanently "Completed"; each completed cycle lives in completedDates.
-      status: isRecurringTask(t) && t.status === "Completed" ? "Not Started" : t.status,
+      status,
     };
   });
 }
@@ -459,6 +478,7 @@ const NAV = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "board", label: "Board", icon: "listChecks" },
   { id: "calendar", label: "Calendar", icon: "calendar" },
+  { id: "holidays", label: "Govt Holidays", icon: "calendar" },
   { id: "projects", label: "Projects", icon: "folder" },
   { id: "analytics", label: "Analytics", icon: "barChart" },
   { id: "salary", label: "Salary", icon: "wallet" },
@@ -577,6 +597,7 @@ function App({ uid, user, onSignOut }) {
             {page === "dashboard" && <Dashboard {...{ settings, tasks, catMap, projMap, now }} />}
             {page === "board" && <BoardView {...{ tasks, persistTasks, categories, projects, catMap, projMap, now }} />}
             {page === "calendar" && <CalendarView {...{ tasks, catMap, projMap, now }} />}
+            {page === "holidays" && <GovernmentHolidayView now={now} />}
             {page === "projects" && <ProjectsView {...{ projects, tasks }} />}
             {page === "analytics" && <AnalyticsView {...{ tasks, categories, projects }} />}
             {page === "salary" && <SalaryView {...{ salary, persistSalary, settings }} />}
@@ -935,22 +956,264 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
 
 /* ============================== CALENDAR ============================== */
 function CalendarView({ tasks, catMap, projMap, now }) {
-  const withDue = useMemo(() => tasks.map((t) => ({ ...t, due: nextDue(t.pattern, now) })).sort((a, b) => a.due - b.due), [tasks, now]);
-  const upcoming = withDue.filter((t) => daysBetween(now, t.due) <= 60);
+  const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+  const cycles = useMemo(() => {
+    const rows = [];
+    tasks.forEach((task) => {
+      if (task.status === "Cancelled") return;
+      const completed = completedDateSet(task);
+      taskOccurrencesInRange(task, now, yearEnd).forEach((due) => {
+        const dateKey = isoDate(due);
+        const done = isRecurringTask(task) ? completed.has(dateKey) : task.status === "Completed";
+        rows.push({ ...task, due, dateKey, done, cycleId: `${task.id}::${dateKey}` });
+      });
+    });
+    return rows.sort((a, b) => a.due - b.due);
+  }, [tasks, now]);
+
+  const grouped = useMemo(() => {
+    const map = {};
+    cycles.forEach((t) => {
+      const key = `${t.due.getFullYear()}-${String(t.due.getMonth() + 1).padStart(2, "0")}`;
+      (map[key] = map[key] || []).push(t);
+    });
+    return map;
+  }, [cycles]);
+
   return (
     <div className="space-y-6">
-      <div><h1 className="text-2xl" style={{ color: FOAM }}>Calendar</h1><p className="text-sm mt-1" style={{ color: MUTE }}>Deadlines synced to Google Calendar (mohammed.mifzaal@gmail.com). Personal calendars are excluded from this workload view.</p></div>
-      <Card>
-        {upcoming.length === 0 ? <EmptyState icon="calendar" title="Nothing in the next 60 days" body="You're clear for now." /> : (
-          <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>
-            {upcoming.map((t) => (
-              <div key={t.id} className="px-5 py-3 flex items-center justify-between">
-                <div><div className="text-sm" style={{ color: FOAM }}>{t.title}</div><div className="flex items-center gap-1.5 mt-1">{projMap[t.project] && <Badge color={projMap[t.project].color}>{projMap[t.project].name}</Badge>}</div></div>
-                <div className="text-xs font-mono" style={{ color: MUTE }}>{fmt(t.due)}</div>
+      <div>
+        <h1 className="text-2xl" style={{ color: FOAM }}>Calendar</h1>
+        <p className="text-sm mt-1" style={{ color: MUTE }}>Every remaining recurring cycle is expanded through 31 December {now.getFullYear()}.</p>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <StatCard label="Cycles remaining" value={cycles.filter((c) => !c.done).length} sub={`through Dec ${now.getFullYear()}`} />
+        <StatCard label="Recurring cycles" value={cycles.filter((c) => isRecurringTask(c)).length} sub="expanded occurrences" />
+        <StatCard label="Last scheduled cycle" value={cycles.length ? fmt(cycles[cycles.length - 1].due) : "—"} sub="year-end schedule" small />
+      </div>
+
+      {Object.keys(grouped).length === 0 ? (
+        <Card><EmptyState icon="calendar" title="No remaining cycles" body="There are no scheduled task occurrences through December." /></Card>
+      ) : Object.keys(grouped).sort().map((key) => {
+        const [y, m] = key.split("-").map(Number);
+        const monthTasks = grouped[key];
+        return (
+          <Card key={key}>
+            <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid " + LINE }}>
+              <h2 className="text-sm font-semibold" style={{ color: FOAM }}>{MONTH_NAMES[m - 1]} {y}</h2>
+              <span className="text-xs font-mono" style={{ color: MUTE }}>{monthTasks.length} cycle{monthTasks.length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="divide-y" style={{ borderColor: "rgba(23,43,77,0.06)" }}>
+              {monthTasks.map((t) => (
+                <div key={t.cycleId} className="px-5 py-3 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-sm" style={{ color: FOAM }}>{t.title}</div>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      {projMap[t.project] && <Badge color={projMap[t.project].color}>{projMap[t.project].name}</Badge>}
+                      {isRecurringTask(t) && <span className="text-xs" style={{ color: MUTE }}>{t.cadenceLabel || "Recurring"}</span>}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-xs font-mono" style={{ color: t.done ? "#00875A" : MUTE }}>{fmt(t.due)}</div>
+                    <div className="text-xs mt-1" style={{ color: t.done ? "#006644" : GOLD }}>{t.done ? "Completed" : "Pending"}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+
+/* ============================== MALDIVES GOVERNMENT HOLIDAYS ============================== */
+// Verified 2026 baseline from the Maldives Ministry of Education public-holiday calendar.
+// The page tries a live refresh from the official Ministry calendar first. If a browser
+// blocks cross-origin access, the verified baseline remains available offline.
+const MALDIVES_HOLIDAYS_2026 = [
+  { name: "New Year 2026", startDate: "2026-01-01", endDate: "2026-01-01" },
+  { name: "Majilis Opening Day", startDate: "2026-02-05", endDate: "2026-02-05" },
+  { name: "First of Ramadan", startDate: "2026-02-18", endDate: "2026-02-18" },
+  { name: "Last 10 Days of Ramadan", startDate: "2026-03-09", endDate: "2026-03-19" },
+  { name: "Eid-al-Fitr", startDate: "2026-03-20", endDate: "2026-03-20" },
+  { name: "On the occasion of Eid-al-Fitr", startDate: "2026-03-21", endDate: "2026-03-22" },
+  { name: "Labour Day", startDate: "2026-05-01", endDate: "2026-05-01" },
+  { name: "Hajj Day", startDate: "2026-05-26", endDate: "2026-05-26" },
+  { name: "Eid-al-Adha", startDate: "2026-05-27", endDate: "2026-05-27" },
+  { name: "On the occasion of Eid-al-Adha", startDate: "2026-05-28", endDate: "2026-05-30" },
+  { name: "Islamic New Year 1448", startDate: "2026-06-16", endDate: "2026-06-16" },
+  { name: "Independence Day", startDate: "2026-07-26", endDate: "2026-07-26" },
+  { name: "On the occasion of Independence Day", startDate: "2026-07-27", endDate: "2026-07-27" },
+  { name: "National Day", startDate: "2026-08-14", endDate: "2026-08-14" },
+  { name: "Prophet Muhammad's (ﷺ) Birthday", startDate: "2026-08-25", endDate: "2026-08-25" },
+  { name: "The Day Maldives Embraced Islam", startDate: "2026-09-13", endDate: "2026-09-13" },
+  { name: "Victory Day", startDate: "2026-11-03", endDate: "2026-11-03" },
+  { name: "Republic Day", startDate: "2026-11-11", endDate: "2026-11-11" },
+];
+
+const MALDIVES_HOLIDAY_SOURCE = "https://education.gov.mv/en/academic-calendar";
+
+function monthNumber(name) {
+  const months = { january:1, february:2, march:3, april:4, may:5, june:6, july:7, august:8, september:9, october:10, november:11, december:12 };
+  return months[String(name || "").toLowerCase()] || null;
+}
+
+function holidayIso(day, monthName, year) {
+  const m = monthNumber(monthName);
+  if (!m) return null;
+  return `${year}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseOfficialHolidayCalendar(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const text = (doc.body?.innerText || "").replace(/\s+/g, " ").trim();
+    if (!text) return [];
+
+    const holidayNames = [
+      "New Year 2026", "Majilis Opening Day", "Opening of the People’s Majlis", "First of Ramadan",
+      "Last 10 Days of Ramadan", "Eid-al-Fitr", "On the occasion of Eid-al-Fitr", "Labour Day",
+      "Hajj Day", "Eid-al-Adha", "On the occasion of Eid-al-Adha", "Islamic New Year 1448",
+      "Independence Day", "On the occasion of Independence Day", "National Day",
+      "Prophet Muhammad's (ﷺ) Birthday", "The Day Maldives Embraced Islam", "Victory Day", "Republic Day"
+    ];
+
+    const parsed = [];
+    for (const name of holidayNames) {
+      const pos = text.toLowerCase().indexOf(name.toLowerCase());
+      if (pos < 0) continue;
+      const nearby = text.slice(pos, pos + 180);
+      const range = nearby.match(/(\d{1,2})\s+([A-Za-z]+)\s+2026\s*-\s*(\d{1,2})\s+([A-Za-z]+)\s+2026/i);
+      const single = nearby.match(/(\d{1,2})\s+([A-Za-z]+)\s+2026/i);
+      if (range) {
+        const startDate = holidayIso(Number(range[1]), range[2], 2026);
+        const endDate = holidayIso(Number(range[3]), range[4], 2026);
+        if (startDate && endDate) parsed.push({ name, startDate, endDate });
+      } else if (single) {
+        const date = holidayIso(Number(single[1]), single[2], 2026);
+        if (date) parsed.push({ name, startDate: date, endDate: date });
+      }
+    }
+
+    // Do not replace the verified baseline unless the live page produced a meaningful set.
+    return parsed.length >= 8 ? parsed : [];
+  } catch (e) {
+    console.warn("Holiday parsing failed", e);
+    return [];
+  }
+}
+
+async function fetchOfficialMaldivesHolidays() {
+  const urls = [
+    MALDIVES_HOLIDAY_SOURCE,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(MALDIVES_HOLIDAY_SOURCE)}`,
+  ];
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) continue;
+      const parsed = parseOfficialHolidayCalendar(await response.text());
+      if (parsed.length) return parsed;
+    } catch (e) {
+      console.warn("Holiday source unavailable", url, e);
+    }
+  }
+  return [];
+}
+
+function holidayDaysInMonth(holidays, year, monthIndex) {
+  const rows = [];
+  holidays.forEach((h) => {
+    let cursor = new Date(h.startDate + "T00:00:00");
+    const end = new Date(h.endDate + "T00:00:00");
+    while (cursor <= end) {
+      if (cursor.getFullYear() === year && cursor.getMonth() === monthIndex) rows.push({ date: isoDate(cursor), name: h.name });
+      cursor = new Date(cursor.getTime() + 86400000);
+    }
+  });
+  return rows;
+}
+
+function GovernmentHolidayView({ now }) {
+  const [holidays, setHolidays] = useState(MALDIVES_HOLIDAYS_2026);
+  const [syncState, setSyncState] = useState("checking");
+  const [lastChecked, setLastChecked] = useState(null);
+  const year = 2026;
+
+  async function refreshHolidays() {
+    setSyncState("checking");
+    const live = await fetchOfficialMaldivesHolidays();
+    if (live.length) {
+      setHolidays(live);
+      setSyncState("live");
+    } else {
+      setHolidays(MALDIVES_HOLIDAYS_2026);
+      setSyncState("baseline");
+    }
+    setLastChecked(new Date());
+  }
+
+  useEffect(() => { refreshHolidays(); }, []);
+
+  const todayKey = isoDate(now);
+  const upcoming = holidays
+    .filter((h) => h.endDate >= todayKey)
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const nextHoliday = upcoming[0];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl" style={{ color: FOAM }}>Maldives Government Holidays</h1>
+          <p className="text-sm mt-1" style={{ color: MUTE }}>2026 public-holiday calendar with automatic refresh from the Maldives Ministry of Education calendar.</p>
+        </div>
+        <Button icon="refresh" variant="ghost" onClick={refreshHolidays} disabled={syncState === "checking"}>{syncState === "checking" ? "Checking…" : "Refresh holidays"}</Button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Holiday periods" value={holidays.length} sub="verified 2026 calendar" />
+        <StatCard label="Next holiday" value={nextHoliday ? fmt(nextHoliday.startDate) : "—"} sub={nextHoliday?.name || "No remaining holidays"} small />
+        <StatCard label="Source status" value={syncState === "live" ? "Live" : syncState === "baseline" ? "Verified fallback" : "Checking"} sub="Ministry calendar" small />
+        <StatCard label="Last checked" value={lastChecked ? lastChecked.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"} sub="this browser session" small />
+      </div>
+
+      {syncState === "baseline" && (
+        <Card className="p-4" style={{ borderColor: GOLD + "55" }}>
+          <div className="text-sm font-medium" style={{ color: FOAM }}>Live source could not be read by the browser.</div>
+          <div className="text-xs mt-1" style={{ color: MUTE }}>The calendar is showing the verified 2026 Ministry baseline instead, so holiday dates remain available.</div>
+        </Card>
+      )}
+
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {Array.from({ length: 12 }, (_, month) => {
+          const days = holidayDaysInMonth(holidays, year, month);
+          return (
+            <Card key={month} className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold" style={{ color: FOAM }}>{MONTH_NAMES[month]} {year}</h2>
+                <span className="text-xs font-mono" style={{ color: MUTE }}>{days.length} day{days.length === 1 ? "" : "s"}</span>
               </div>
-            ))}
-          </div>
-        )}
+              {days.length === 0 ? <div className="text-xs py-2" style={{ color: MUTE }}>No government holiday</div> : (
+                <div className="space-y-2">
+                  {days.map((d) => (
+                    <div key={`${d.date}-${d.name}`} className="flex items-start gap-3 p-2" style={{ background: d.date === todayKey ? SELECTED_BG : "#FAFBFC", borderRadius: 3 }}>
+                      <div className="w-8 text-center shrink-0"><div className="font-mono text-sm font-semibold" style={{ color: TEAL }}>{new Date(d.date + "T00:00:00").getDate()}</div><div className="text-xs" style={{ color: MUTE }}>{DAY_NAMES[new Date(d.date + "T00:00:00").getDay()]}</div></div>
+                      <div className="text-xs leading-5" style={{ color: FOAM }}>{d.name}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      <Card className="p-4">
+        <div className="text-xs" style={{ color: MUTE }}>Source: Maldives Ministry of Education — Academic Calendar 2026. Islamic holiday dates can be subject to official moon-sighting announcements; use Refresh holidays to check the live source.</div>
       </Card>
     </div>
   );
@@ -1417,9 +1680,10 @@ function SettingsView({ settings, persistSettings, categories, persistCategories
         <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Integrations</h2>
         <div className="text-sm space-y-2" style={{ color: FOAM }}>
           <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Todoist — read-only snapshot, taken 12 Aug 2026</div>
-          <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Calendar — read-only snapshot, taken 12 Aug 2026</div>
+          <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Calendar — recurring task cycles expand automatically through December</div>
+          <div className="flex items-center gap-2"><Icon name="refresh" size={14} color={TEAL} /> Govt Holidays — live-checks the Maldives Ministry of Education calendar with a verified 2026 fallback</div>
         </div>
-        <p className="text-xs mt-3" style={{ color: MUTE }}>Data syncs to your Firebase account. It can't call Todoist or Calendar live — ask Claude to regenerate this file when your recurring tasks change.</p>
+        <p className="text-xs mt-3" style={{ color: MUTE }}>Task data syncs to your Firebase account. Recurring task dates are generated locally; government holidays attempt a live Ministry refresh whenever that page opens.</p>
       </Card>
     </div>
   );

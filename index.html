@@ -12,7 +12,7 @@
 <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, signInWithRedirect, getRedirectResult} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
   import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
   import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js";
 
@@ -29,7 +29,7 @@
   const googleProvider = new GoogleAuthProvider();
   const db = getFirestore(app);
 
-  window.Fb = { app, auth, googleProvider, db, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, getMessaging, getToken, onMessage, isSupported };
+  window.Fb = { app, auth, googleProvider, db, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, getMessaging, getToken, onMessage, isSupported, signInWithRedirect, getRedirectResult};
   window.dispatchEvent(new Event("fb-ready"));
 </script>
 <style>
@@ -120,13 +120,22 @@ const ALLOWED_EMAIL = "mohammed.mifzaal@gmail.com";
 function SignIn() {
   async function handleSignIn() {
     try {
-      const { auth, googleProvider, signInWithPopup } = window.Fb;
+      const { auth, googleProvider, signInWithPopup, signInWithRedirect } = window.Fb;
+      const useRedirect = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (window.matchMedia && window.matchMedia("(pointer: coarse)").matches && window.innerWidth <= 1024);
+
+      if (useRedirect) {
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
+
       await signInWithPopup(auth, googleProvider);
     } catch (e) {
       console.error(e);
       alert("Sign-in failed: " + e.message);
     }
   }
+
   return (
     <div style={{ background: INK, minHeight: "100vh" }} className="flex items-center justify-center px-6">
       <div className="max-w-sm w-full text-center">
@@ -173,7 +182,13 @@ function Root() {
   const [deniedEmail, setDeniedEmail] = useState(null);
   useEffect(() => {
     if (!fbReady) return;
-    const { auth, onAuthStateChanged, signOut } = window.Fb;
+    const { auth, onAuthStateChanged, signOut, getRedirectResult } = window.Fb;
+
+    // Finish a mobile Google redirect after returning to this page.
+    getRedirectResult(auth).catch((e) => {
+      console.error("Redirect sign-in failed", e);
+      alert("Sign-in failed: " + e.message);
+    });
     const unsub = onAuthStateChanged(auth, (u) => {
       if (u && u.email !== ALLOWED_EMAIL) {
         setDeniedEmail(u.email);

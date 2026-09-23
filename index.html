@@ -14,6 +14,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
   import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
   import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+  import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyAURyLfpMyMyYMtZH-598SXGXnvdmeYqf4",
@@ -28,7 +29,7 @@
   const googleProvider = new GoogleAuthProvider();
   const db = getFirestore(app);
 
-  window.Fb = { app, auth, googleProvider, db, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc };
+  window.Fb = { app, auth, googleProvider, db, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, getMessaging, getToken, onMessage, isSupported };
   window.dispatchEvent(new Event("fb-ready"));
 </script>
 <style>
@@ -267,6 +268,11 @@ function seedTasks() {
 }
 const DEFAULT_SETTINGS = {
   name: "Mifzal", currency: "MVR",
+  notificationsEnabled: false,
+  notificationTime: "08:00",
+  notificationTimezone: "Indian/Maldives",
+  // Paste the PUBLIC Web Push certificate key from Firebase Console > Project settings > Cloud Messaging.
+  vapidKey: "",
 };
 
 /* ============================== DATE HELPERS ============================== */
@@ -603,7 +609,7 @@ function App({ uid, user, onSignOut }) {
             {page === "salary" && <SalaryView {...{ salary, persistSalary, settings }} />}
             {page === "leaves" && <LeavesView {...{ leaves, persistLeaves }} />}
             {page === "reports" && <ReportsView {...{ tasks, categories, projects, catMap, projMap, now }} />}
-            {page === "settings" && <SettingsView {...{ settings, persistSettings, categories, persistCategories, projects, persistProjects }} />}
+            {page === "settings" && <SettingsView {...{ uid, settings, persistSettings, categories, persistCategories, projects, persistProjects }} />}
           </div>
         </main>
       </div>
@@ -1653,11 +1659,37 @@ function LeavesView({ leaves, persistLeaves }) {
 }
 
 /* ============================== SETTINGS ============================== */
-function SettingsView({ settings, persistSettings, categories, persistCategories, projects, persistProjects }) {
+function SettingsView({ uid, settings, persistSettings, categories, persistCategories, projects, persistProjects }) {
   const [local, setLocal] = useState(settings);
   const [newCat, setNewCat] = useState("");
   const [newProj, setNewProj] = useState("");
   const [saved, setSaved] = useState(false);
+  const [pushStatus, setPushStatus] = useState("");
+
+  async function enablePushNotifications() {
+    try {
+      if (!(await window.Fb.isSupported())) throw new Error("Push notifications are not supported by this browser.");
+      if (!local.vapidKey?.trim()) throw new Error("Add your Firebase Web Push VAPID public key first.");
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") throw new Error("Notification permission was not granted.");
+      const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+      const messaging = window.Fb.getMessaging(window.Fb.app);
+      const token = await window.Fb.getToken(messaging, { vapidKey: local.vapidKey.trim(), serviceWorkerRegistration: registration });
+      if (!token) throw new Error("Firebase did not return a notification token.");
+      await window.Fb.setDoc(window.Fb.doc(window.Fb.db, "users", uid, "data", "push"), {
+        token, enabled: true, reminderTime: local.notificationTime || "08:00", timezone: "Indian/Maldives", updatedAt: Date.now()
+      });
+      const next = { ...local, notificationsEnabled: true, notificationTimezone: "Indian/Maldives" };
+      setLocal(next); await persistSettings(next); setPushStatus("Push notifications enabled on this device.");
+    } catch (e) { console.error(e); setPushStatus(e.message || "Could not enable notifications."); }
+  }
+
+  async function disablePushNotifications() {
+    const next = { ...local, notificationsEnabled: false };
+    setLocal(next); await persistSettings(next);
+    await window.Fb.setDoc(window.Fb.doc(window.Fb.db, "users", uid, "data", "push"), { enabled: false, updatedAt: Date.now() }, { merge: true });
+    setPushStatus("Daily push reminders disabled.");
+  }
   async function save() { await persistSettings(local); setSaved(true); setTimeout(() => setSaved(false), 1500); }
   async function addCategory() { if (!newCat.trim()) return; await persistCategories([...categories, { id: "cat-" + Date.now(), name: newCat.trim(), color: "#8A8A8A" }]); setNewCat(""); }
   async function removeCategory(id) { await persistCategories(categories.filter((c) => c.id !== id)); }
@@ -1685,6 +1717,18 @@ function SettingsView({ settings, persistSettings, categories, persistCategories
           <div key={p.id} className="flex items-center justify-between text-sm"><Badge color={p.color}>{p.name}</Badge><button onClick={() => removeProject(p.id)}><Icon name="trash" size={13} color={MUTE} /></button></div>
         ))}</div>
         <div className="flex gap-2"><TextInput value={newProj} onChange={(e) => setNewProj(e.target.value)} placeholder="New project" /><Button icon="plus" onClick={addProject}>Add</Button></div>
+      </Card>
+      <Card className="p-5">
+        <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Phone notifications</h2>
+        <p className="text-sm mb-4" style={{ color: MUTE }}>One reminder each morning for tasks due today and overdue tasks. Default: 8:00 AM Maldives time.</p>
+        <Field label="Daily reminder time"><TextInput type="time" value={local.notificationTime || "08:00"} onChange={(e) => setLocal({ ...local, notificationTime: e.target.value })} /></Field>
+        <Field label="Firebase Web Push public key (VAPID)"><TextInput value={local.vapidKey || ""} onChange={(e) => setLocal({ ...local, vapidKey: e.target.value })} placeholder="Paste public VAPID key" /></Field>
+        <div className="flex gap-2 flex-wrap">
+          <Button icon="check" onClick={enablePushNotifications}>Enable on this device</Button>
+          {local.notificationsEnabled && <Button variant="ghost" onClick={disablePushNotifications}>Disable reminders</Button>}
+        </div>
+        {pushStatus && <div className="text-xs mt-3" style={{ color: local.notificationsEnabled ? "#006644" : MUTE }}>{pushStatus}</div>}
+        <p className="text-xs mt-3" style={{ color: MUTE }}>The public VAPID key is safe to use in the browser. Do not put Firebase Admin private credentials in this HTML file.</p>
       </Card>
       <Card className="p-5">
         <h2 className="text-sm font-medium mb-3" style={{ color: MUTE }}>Integrations</h2>

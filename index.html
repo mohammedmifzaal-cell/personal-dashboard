@@ -367,13 +367,13 @@ function migrateTasksForCompletionModel(list) {
 
     // Preserve the original imported-history behavior.
     if (t.source === "Todoist" && isRecurringTask(t) && (t.periodGroup === "month-end" || t.periodGroup === "quarter-end")) {
-      completedDates = [...new Set([...computeHistoricalCompletions(t.pattern, joined, completedThrough), ...completedDates])].sort();
+      completedDates = [...new Set([...computeHistoricalCompletions(t.pattern, joined, completedThrough).filter((d) => !(t.reopenedDates || []).includes(d)), ...completedDates])].sort();
     }
 
     // Requested 2026 correction: every recurring occurrence due in Jan or Feb is completed.
     if (isRecurringTask(t)) {
       const janFebCycles = computeHistoricalCompletions(t.pattern, janStart, febEnd);
-      completedDates = [...new Set([...janFebCycles, ...completedDates])].sort();
+      completedDates = [...new Set([...janFebCycles.filter((d) => !(t.reopenedDates || []).includes(d)), ...completedDates])].sort();
     }
 
     // If a one-off item ever falls in Jan/Feb 2026, mark it completed too.
@@ -763,7 +763,7 @@ function CommentsPanel({ task, commentOpenId, setCommentOpenId, commentDraft, se
   );
 }
 
-function ActiveTicket({ t, catMap, projMap, idIndex, now, requestDelete, moveTask, completeTask, setDragId, commentOpenId, setCommentOpenId, commentDraft, setCommentDraft, addComment, deleteComment }) {
+function ActiveTicket({ t, catMap, projMap, idIndex, now, requestDelete, requestEdit, moveTask, completeTask, setDragId, commentOpenId, setCommentOpenId, commentDraft, setCommentDraft, addComment, deleteComment }) {
   const proj = projMap[t.project], cat = catMap[t.category];
   const col = columnOf(t.status);
   const colIdx = BOARD_COLUMNS.findIndex((c) => c.id === col.id);
@@ -785,7 +785,8 @@ function ActiveTicket({ t, catMap, projMap, idIndex, now, requestDelete, moveTas
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs font-mono" style={{ color: MUTE }}>{projectCode(proj?.name)}-{idIndex[t.id]}</span>
-          <button onClick={() => requestDelete(t.id)} title="Delete task"><Icon name="trash" size={13} color={CORAL} /></button>
+          <button onClick={() => requestEdit(t.id)} title="Edit task" className="text-xs font-semibold" style={{ color: TEAL }}>Edit</button>
+          <div className="flex gap-2 items-center"><button onClick={() => requestEdit(t.id)} className="text-xs font-semibold" style={{ color: TEAL }}>Edit</button><button onClick={() => reopenTask(t.id, t.latestCompletion)} className="text-xs font-semibold" style={{ color: TEAL }}>↩ Pending</button><button onClick={() => requestDelete(t.id)} title="Delete task"><Icon name="trash" size={13} color={CORAL} /></button></div>
         </div>
       </div>
       <CommentsPanel task={t} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />
@@ -801,7 +802,7 @@ function ActiveTicket({ t, catMap, projMap, idIndex, now, requestDelete, moveTas
   );
 }
 
-function CompletedSummary({ t, projMap, requestDelete, commentOpenId, setCommentOpenId, commentDraft, setCommentDraft, addComment, deleteComment }) {
+function CompletedSummary({ t, projMap, requestDelete, requestEdit, reopenTask, commentOpenId, setCommentOpenId, commentDraft, setCommentDraft, addComment, deleteComment }) {
   const proj = projMap[t.project];
   const labels = (t.completedDates || []).map((d) => completionPeriodLabel(t, d));
   return (
@@ -829,6 +830,31 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
   const [commentOpenId, setCommentOpenId] = useState(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  function requestEdit(id) {
+    const t = tasks.find((x) => x.id === id);
+    if (!t) return;
+    setEditId(id);
+    setEditDraft({ title: t.title, project: t.project, category: t.category, dueDate: t.pattern?.type === "once" ? t.pattern.date : "", notes: t.notes || "" });
+  }
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!editDraft?.title.trim()) return;
+    await persistTasks(tasks.map((t) => t.id !== editId ? t : {
+      ...t, title: editDraft.title.trim(), project: editDraft.project,
+      category: editDraft.category, notes: editDraft.notes,
+      pattern: t.pattern?.type === "once" && editDraft.dueDate ? { ...t.pattern, date: editDraft.dueDate } : t.pattern
+    }));
+    setEditId(null); setEditDraft(null);
+  }
+  async function reopenTask(id, dateKey) {
+    await persistTasks(tasks.map((t) => {
+      if (t.id !== id) return t;
+      if (!isRecurringTask(t)) return { ...t, status: "Not Started", completedDates: [] };
+      return { ...t, completedDates: (t.completedDates || []).filter((d) => d !== dateKey), reopenedDates: [...new Set([...(t.reopenedDates || []), dateKey])], status: "Not Started" };
+    }));
+  }
 
   const idIndex = useMemo(() => Object.fromEntries(tasks.map((t, i) => [t.id, i + 1])), [tasks]);
   const activeBoard = useMemo(() => tasks
@@ -856,7 +882,7 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
       if (t.id !== id) return t;
       if (!isRecurringTask(t)) return { ...t, status: "Completed" };
       const completedDates = [...new Set([...(t.completedDates || []), dateKey])].sort();
-      return { ...t, completedDates, status: "Not Started" };
+      return { ...t, completedDates, reopenedDates: (t.reopenedDates || []).filter((d) => d !== dateKey), status: "Not Started" };
     }));
   }
   async function moveTask(id, columnId, due) {
@@ -865,6 +891,7 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
     const task = tasks.find((t) => t.id === id);
     if (!task) return;
     if (columnId === "done") return completeTask(id, due || nextOpenDue(task, now));
+    if (!isRecurringTask(task) && task.status === "Completed") return reopenTask(id);
     await setTaskStatus(id, col.setStatus);
   }
   async function confirm(id) { await persistTasks(tasks.map((t) => (t.id === id ? { ...t, confirmed: true } : t))); }
@@ -901,6 +928,19 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
 
   return (
     <div className="space-y-5">
+      {editDraft && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: "rgba(9,30,66,0.54)" }}>
+          <form onSubmit={saveEdit} className="w-full max-w-lg p-5 space-y-3" style={{ background: SLATE, borderRadius: 5 }}>
+            <h3 className="text-lg font-semibold" style={{ color: FOAM }}>Edit task</h3>
+            <Field label="Task title"><TextInput value={editDraft.title} onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })} required /></Field>
+            <Field label="Project"><Select value={editDraft.project} onChange={(e) => setEditDraft({ ...editDraft, project: e.target.value })}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></Field>
+            <Field label="Category"><Select value={editDraft.category} onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+            {editDraft.dueDate && <Field label="Due date"><TextInput type="date" value={editDraft.dueDate} onChange={(e) => setEditDraft({ ...editDraft, dueDate: e.target.value })} /></Field>}
+            <Field label="Notes"><textarea className="w-full p-2 text-sm" style={inputStyle} rows="3" value={editDraft.notes} onChange={(e) => setEditDraft({ ...editDraft, notes: e.target.value })} /></Field>
+            <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setEditId(null); setEditDraft(null); }}>Cancel</Button><Button type="submit">Save changes</Button></div>
+          </form>
+        </div>
+      )}
       {taskPendingDelete && (
         <ConfirmModal
           title="Delete task?"
@@ -958,13 +998,13 @@ function BoardView({ tasks, persistTasks, categories, projects, catMap, projMap,
               <div style={{ maxHeight: "68vh", overflowY: "auto", paddingRight: 2 }}>
                 {col.id === "done" ? (
                   <>
-                    {historySummaries.map((t) => <CompletedSummary key={`history-${t.id}`} t={t} projMap={projMap} requestDelete={requestDelete} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
-                    {completedOneOff.map((t) => <ActiveTicket key={`done-${t.id}`} t={t} catMap={catMap} projMap={projMap} idIndex={idIndex} now={now} requestDelete={requestDelete} moveTask={moveTask} completeTask={completeTask} setDragId={setDragId} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
+                    {historySummaries.map((t) => <CompletedSummary key={`history-${t.id}`} t={t} projMap={projMap} requestDelete={requestDelete} requestEdit={requestEdit} reopenTask={reopenTask} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
+                    {completedOneOff.map((t) => <ActiveTicket key={`done-${t.id}`} t={t} catMap={catMap} projMap={projMap} idIndex={idIndex} now={now} requestDelete={requestDelete} requestEdit={requestEdit} moveTask={moveTask} completeTask={completeTask} setDragId={setDragId} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
                     {historySummaries.length === 0 && completedOneOff.length === 0 && <div className="text-xs text-center py-8" style={{ color: MUTE }}>No completed work yet</div>}
                   </>
                 ) : colTasks.length === 0 ? (
                   <div className="text-xs text-center py-8" style={{ color: MUTE }}>No tasks</div>
-                ) : colTasks.map((t) => <ActiveTicket key={`${t.id}-${isoDate(t.due)}`} t={t} catMap={catMap} projMap={projMap} idIndex={idIndex} now={now} requestDelete={requestDelete} moveTask={moveTask} completeTask={completeTask} setDragId={setDragId} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
+                ) : colTasks.map((t) => <ActiveTicket key={`${t.id}-${isoDate(t.due)}`} t={t} catMap={catMap} projMap={projMap} idIndex={idIndex} now={now} requestDelete={requestDelete} requestEdit={requestEdit} moveTask={moveTask} completeTask={completeTask} setDragId={setDragId} commentOpenId={commentOpenId} setCommentOpenId={setCommentOpenId} commentDraft={commentDraft} setCommentDraft={setCommentDraft} addComment={addComment} deleteComment={deleteComment} />)}
               </div>
             </div>
           );
@@ -1409,6 +1449,31 @@ function SalaryView({ salary, persistSalary, settings }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ month: isoDate(new Date()).slice(0, 7), type: "Basic Salary", amount: "", notes: "" });
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  function requestEdit(id) {
+    const t = tasks.find((x) => x.id === id);
+    if (!t) return;
+    setEditId(id);
+    setEditDraft({ title: t.title, project: t.project, category: t.category, dueDate: t.pattern?.type === "once" ? t.pattern.date : "", notes: t.notes || "" });
+  }
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!editDraft?.title.trim()) return;
+    await persistTasks(tasks.map((t) => t.id !== editId ? t : {
+      ...t, title: editDraft.title.trim(), project: editDraft.project,
+      category: editDraft.category, notes: editDraft.notes,
+      pattern: t.pattern?.type === "once" && editDraft.dueDate ? { ...t.pattern, date: editDraft.dueDate } : t.pattern
+    }));
+    setEditId(null); setEditDraft(null);
+  }
+  async function reopenTask(id, dateKey) {
+    await persistTasks(tasks.map((t) => {
+      if (t.id !== id) return t;
+      if (!isRecurringTask(t)) return { ...t, status: "Not Started", completedDates: [] };
+      return { ...t, completedDates: (t.completedDates || []).filter((d) => d !== dateKey), reopenedDates: [...new Set([...(t.reopenedDates || []), dateKey])], status: "Not Started" };
+    }));
+  }
   const currency = settings.currency || "MVR";
 
   async function addEntry(e) {
@@ -1587,6 +1652,31 @@ function LeavesView({ leaves, persistLeaves }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ type: LEAVE_TYPES[0], startDate: isoDate(new Date()), endDate: isoDate(new Date()), notes: "" });
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  function requestEdit(id) {
+    const t = tasks.find((x) => x.id === id);
+    if (!t) return;
+    setEditId(id);
+    setEditDraft({ title: t.title, project: t.project, category: t.category, dueDate: t.pattern?.type === "once" ? t.pattern.date : "", notes: t.notes || "" });
+  }
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!editDraft?.title.trim()) return;
+    await persistTasks(tasks.map((t) => t.id !== editId ? t : {
+      ...t, title: editDraft.title.trim(), project: editDraft.project,
+      category: editDraft.category, notes: editDraft.notes,
+      pattern: t.pattern?.type === "once" && editDraft.dueDate ? { ...t.pattern, date: editDraft.dueDate } : t.pattern
+    }));
+    setEditId(null); setEditDraft(null);
+  }
+  async function reopenTask(id, dateKey) {
+    await persistTasks(tasks.map((t) => {
+      if (t.id !== id) return t;
+      if (!isRecurringTask(t)) return { ...t, status: "Not Started", completedDates: [] };
+      return { ...t, completedDates: (t.completedDates || []).filter((d) => d !== dateKey), reopenedDates: [...new Set([...(t.reopenedDates || []), dateKey])], status: "Not Started" };
+    }));
+  }
 
   async function addEntry(e) {
     e.preventDefault();
